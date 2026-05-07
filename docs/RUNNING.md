@@ -35,7 +35,19 @@ $env:DREAM_NEIGHBORHOOD_PASSWORD = "your-password"
 
 If you skip this, you should expect many `login_wall` outcomes in `results.json`.
 
-### 3. Tune selectors (before a 1000-address run)
+### 3. Running inside Cursor (or VS Code)
+
+You can treat this like any other Python project—output shows in the **integrated terminal**, and JSON opens in the editor.
+
+1. **Python interpreter:** choose your venv in Cursor (**Python: Select Interpreter** → `.venv`).
+2. **One-click run:** **Terminal → Run Task…** (or `Ctrl+Shift+B` if you bind it) → pick **Neighborhood Explorer: smoke (2, show browser)** or **custom count…**.
+3. **Breakpoints:** open **Run and Debug** (`Ctrl+Shift+D`) → choose **Explorer: smoke (2, headed)** (or single-address) → Start.
+4. **See numbers here:** when the run finishes, open **`dashboard/results.json`** or **`results.json`** with **Quick Open** (`Ctrl+P`). The pretty charts need a browser: either open **`dashboard/index.html`** with the **Live Server** extension, or in a terminal: `cd dashboard` then `python -m http.server 8766` and visit [http://localhost:8766](http://localhost:8766).
+5. **Live updating charts while tests run:** use task **Neighborhood Explorer: live dashboard + smoke**, then in a browser open [http://127.0.0.1:8765/?live=1](http://127.0.0.1:8765/?live=1).
+
+The AI chat can read `results.json` too: run the task, then ask it to summarize the file.
+
+### 4. Tune selectors (before a 1000-address run)
 
 ```powershell
 playwright codegen https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/
@@ -43,7 +55,7 @@ playwright codegen https://staging.dreamneighborhood.com/a/drea-neighborhood-tre
 
 Copy working locators into the `CONFIG` block at the top of `text/test_neighborhood_explorer.py` (iframe, address field, submit, etc.).
 
-### 4. Run a small smoke batch
+### 5. Run a small smoke batch
 
 ```powershell
 python text/test_neighborhood_explorer.py --count 5 --headed
@@ -57,7 +69,7 @@ Output:
 - `results.json` at repo root (unless `--output` says otherwise)
 - `dashboard/results.json` updated automatically for the static dashboard
 
-### 5. Live dashboard while the run is in progress (optional)
+### 6. Live dashboard while the run is in progress (optional)
 
 ```powershell
 python text/test_neighborhood_explorer.py --count 50 --live-port 8765

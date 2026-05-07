@@ -7,7 +7,7 @@ Python + [Playwright](https://playwright.dev) drives staging in a **real browser
 ## Quick links
 
 - **Simple explanation + “why is GitHub slow?”:** [docs/START-HERE.md](docs/START-HERE.md)
-- **Full how-to (local + Actions):** [docs/RUNNING.md](docs/RUNNING.md)
+- **Full how-to (local + Actions + Cursor tasks):** [docs/RUNNING.md](docs/RUNNING.md)
 - **Run in GitHub:** [Actions → Run workflow](https://github.com/motormouthvis/automated-UI-test/actions/workflows/run-explorer-tests.yml)
 
 ## What this is not
@@ -21,4 +21,5 @@ Python + [Playwright](https://playwright.dev) drives staging in a **real browser
 | `text/test_neighborhood_explorer.py` | Playwright test runner |
 | `dashboard/` | Static UI + `results.json` for Netlify |
 | `requirements.txt` | Python dependencies |
-| `.github/workflows/run-explorer-tests.yml` | Optional GitHub Actions job |
+| `.vscode/tasks.json` | Cursor/VS Code: **Run Task** for smoke runs |
+| `.vscode/launch.json` | Cursor/VS Code: **Run and Debug** (breakpoints) |

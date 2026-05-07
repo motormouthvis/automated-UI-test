@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Explorer: smoke (2, headed)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["--count", "2", "--headed"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Explorer: smoke (2, headless)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["--count", "2", "--headless", "true"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Explorer: single address (1, headed)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["--count", "1", "--headed"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

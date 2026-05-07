@@ -1,0 +1,74 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Neighborhood Explorer: smoke (2, show browser)",
+      "type": "shell",
+      "command": "python text/test_neighborhood_explorer.py --count 2 --headed",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {}
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Neighborhood Explorer: smoke (2, headless)",
+      "type": "shell",
+      "command": "python text/test_neighborhood_explorer.py --count 2 --headless true",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Neighborhood Explorer: custom count…",
+      "type": "shell",
+      "command": "python text/test_neighborhood_explorer.py --count ${input:explorerCount} --headed",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Neighborhood Explorer: live dashboard + smoke",
+      "type": "shell",
+      "command": "python text/test_neighborhood_explorer.py --count 2 --headed --live-port 8765",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "explorerCount",
+      "type": "promptString",
+      "description": "How many addresses (1–1000)",
+      "default": "2"
+    }
+  ]
+}
