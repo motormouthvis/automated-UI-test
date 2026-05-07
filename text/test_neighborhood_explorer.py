@@ -11,8 +11,13 @@ INSTALLATION
   playwright install chromium
 
   Optional login (staging shows a sign-in wall for anonymous visitors):
-    set DREAM_NEIGHBORHOOD_EMAIL=you@example.com
-    set DREAM_NEIGHBORHOOD_PASSWORD=secret
+
+    PowerShell (same terminal before running):
+      $env:DREAM_NEIGHBORHOOD_EMAIL = "you@example.com"
+      $env:DREAM_NEIGHBORHOOD_PASSWORD = "secret"
+
+    Or create a repo-root .env file (see .env.example). Existing environment
+    variables always win; .env is not committed (.gitignore).
 
 ================================================================================
 DISCOVER SELECTORS (do this before a full 1000-run)
@@ -140,6 +145,41 @@ DEFAULT_ADDRESS_COUNT = 2
 _DEFAULT_ARTIFACTS = _REPO_ROOT / "artifacts" / "screenshots"
 # Repository slug for help links in exported JSON (override in CI with GITHUB_REPOSITORY).
 GITHUB_REPO_PATH = os.environ.get("GITHUB_REPOSITORY", "motormouthvis/automated-UI-test")
+
+
+def _load_repo_dotenv() -> None:
+    """Load repo-root .env into os.environ if present. Does not override existing vars."""
+    path = _REPO_ROOT / ".env"
+    if not path.is_file():
+        return
+    # UTF-8; tolerate BOM on Windows editors
+    text = path.read_text(encoding="utf-8-sig")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, _, rest = line.partition("=")
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        val = rest.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        os.environ[key] = val
+
+
+def _line_buffer_stdio() -> None:
+    """Best-effort: flush print/tqdm.write sooner when stdout/stderr are pipes (IDE runs)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(line_buffering=True)
+            except Exception:
+                pass
 
 
 def _run_meta_extras(login_env_configured: bool) -> Dict[str, Any]:
@@ -869,6 +909,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    _load_repo_dotenv()
+    _line_buffer_stdio()
     args = parse_args()
     if args.count is None:
         if sys.stdin.isatty():
@@ -952,6 +994,8 @@ def main() -> int:
             row = run_one(page, i, state, address, src, artifacts_dir, had_login_config)
             rows.append(row)
             tqdm.write(_report_address_result(i, state, address, row))
+            sys.stdout.flush()
+            sys.stderr.flush()
             if args.live_port is not None and args.live_port > 0:
                 write_live_state_file(
                     rows,

@@ -60,6 +60,7 @@ jobs:
 
       - name: Run explorer tests
         env:
+          PYTHONUNBUFFERED: "1"
           DREAM_NEIGHBORHOOD_EMAIL: ${{ secrets.DREAM_NEIGHBORHOOD_EMAIL }}
           DREAM_NEIGHBORHOOD_PASSWORD: ${{ secrets.DREAM_NEIGHBORHOOD_PASSWORD }}
         run: |

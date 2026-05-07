@@ -6,7 +6,8 @@
       "type": "shell",
       "command": "python text/test_neighborhood_explorer.py --headed",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
       },
       "group": "test",
       "presentation": {
@@ -22,7 +23,7 @@
       "command": "python text/test_neighborhood_explorer.py --count 2 --headed",
       "options": {
         "cwd": "${workspaceFolder}",
-        "env": {}
+        "envFile": "${workspaceFolder}/.env"
       },
       "group": "test",
       "presentation": {
@@ -37,7 +38,8 @@
       "type": "shell",
       "command": "python text/test_neighborhood_explorer.py --count 2 --headless true",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
       },
       "group": "test",
       "presentation": {
@@ -52,7 +54,8 @@
       "type": "shell",
       "command": "python text/test_neighborhood_explorer.py --count ${input:explorerCount} --headed",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
       },
       "group": "test",
       "presentation": {
@@ -67,7 +70,8 @@
       "type": "shell",
       "command": "python text/test_neighborhood_explorer.py --count 2 --headed --live-port 8765",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
       },
       "group": "test",
       "presentation": {

@@ -7,6 +7,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
       "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
       "args": ["--count", "2", "--headed"],
       "console": "integratedTerminal",
       "justMyCode": true
@@ -17,6 +18,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
       "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
       "args": ["--count", "2", "--headless", "true"],
       "console": "integratedTerminal",
       "justMyCode": true
@@ -27,6 +29,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
       "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
       "args": ["--count", "1", "--headed"],
       "console": "integratedTerminal",
       "justMyCode": true
