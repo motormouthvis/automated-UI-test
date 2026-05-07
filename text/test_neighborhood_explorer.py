@@ -113,10 +113,6 @@ ERROR_SELECTOR = '[class*="error" i], [class*="alert" i], [role="alert"], .text-
 # If the widget shows a spinner / aria-busy while fetching, tune this (set to "" to disable).
 LOADING_SELECTOR = '[class*="loading" i], [class*="spinner" i], [aria-busy="true"], [data-loading="true"]'
 
-LOGIN_EMAIL_SELECTOR = 'input[name="login"], input#id_login, input[type="email"], input[autocomplete="username"]'
-LOGIN_PASSWORD_SELECTOR = 'input[name="password"], input#id_password, input[type="password"]'
-LOGIN_SUBMIT_SELECTOR = 'button[type="submit"], button:has-text("Sign in")'
-
 NAVIGATION_TIMEOUT_MS = 60_000
 ACTION_TIMEOUT_MS = 25_000
 RESULT_TIMEOUT_MS = 60_000
@@ -284,15 +280,29 @@ def build_address_runlist(total: int) -> List[tuple[str, str, str]]:
     return out
 
 
+def _login_form(page: Page):
+    """
+    The sign-in <form> only. Using page-wide ``input[type=email]`` matches
+    unrelated fields (header/footer) that appear earlier in the DOM, which
+    breaks allauth's ``name=login`` field.
+    """
+    return page.locator("form").filter(has=page.locator('input[type="password"]'))
+
+
 def _maybe_login(page: Page) -> None:
     email = os.environ.get("DREAM_NEIGHBORHOOD_EMAIL", "").strip()
     password = os.environ.get("DREAM_NEIGHBORHOOD_PASSWORD", "").strip()
     if not email or not password:
         return
     page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-    page.locator(LOGIN_EMAIL_SELECTOR).first.fill(email, timeout=ACTION_TIMEOUT_MS)
-    page.locator(LOGIN_PASSWORD_SELECTOR).first.fill(password, timeout=ACTION_TIMEOUT_MS)
-    page.locator(LOGIN_SUBMIT_SELECTOR).first.click(timeout=ACTION_TIMEOUT_MS)
+    form = _login_form(page).first
+    form.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+    # Django allauth — prefer id_login / name=login (not a generic type=email elsewhere on page).
+    form.locator('input#id_login, input[name="login"]').first.fill(email, timeout=ACTION_TIMEOUT_MS)
+    form.locator('input#id_password, input[name="password"]').first.fill(
+        password, timeout=ACTION_TIMEOUT_MS
+    )
+    form.locator('button[type="submit"], input[type="submit"]').first.click(timeout=ACTION_TIMEOUT_MS)
     page.wait_for_load_state("networkidle", timeout=NAVIGATION_TIMEOUT_MS)
 
 
