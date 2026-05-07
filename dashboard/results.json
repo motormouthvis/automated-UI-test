@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "generated_at": "2026-05-07T00:00:00+00:00",
+    "staging_url": "https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/",
+    "total_tests": 4,
+    "success_count": 2,
+    "failure_count": 2,
+    "success_rate": 50.0,
+    "avg_duration_ms": 1850.5,
+    "states_covered": 3
+  },
+  "results": [
+    {
+      "id": 1,
+      "address": "123 Market St, San Francisco, CA 94105",
+      "state": "CA",
+      "success": true,
+      "duration_ms": 1420.25,
+      "neighborhood_name": "Sample District (demo)",
+      "metrics": {
+        "metric_1": "Liveability index: 82 / 100"
+      },
+      "error_message": null,
+      "screenshot_path": null,
+      "extracted_raw": "Demo snapshot text… Replace this file by running text/test_neighborhood_explorer.py.",
+      "retry_count": 0,
+      "address_source": "demo"
+    },
+    {
+      "id": 2,
+      "address": "456 Ocean Dr, Miami Beach, FL 33139",
+      "state": "FL",
+      "success": false,
+      "duration_ms": 2103.4,
+      "neighborhood_name": null,
+      "metrics": {},
+      "error_message": "login_required_or_session_expired",
+      "screenshot_path": null,
+      "extracted_raw": "Sign in to your account …",
+      "retry_count": 2,
+      "address_source": "demo"
+    },
+    {
+      "id": 3,
+      "address": "789 Peachtree St NE, Atlanta, GA 30308",
+      "state": "GA",
+      "success": true,
+      "duration_ms": 980.1,
+      "neighborhood_name": "Midtown Atlanta (demo)",
+      "metrics": {
+        "metric_1": "Walk score: 91"
+      },
+      "error_message": null,
+      "screenshot_path": null,
+      "extracted_raw": "Demo snapshot text…",
+      "retry_count": 0,
+      "address_source": "demo"
+    },
+    {
+      "id": 4,
+      "address": "100 Congress Ave, Austin, TX 78701",
+      "state": "TX",
+      "success": false,
+      "duration_ms": 2898.0,
+      "neighborhood_name": null,
+      "metrics": {},
+      "error_message": "no_clear_result",
+      "screenshot_path": "/artifacts/screenshots/fail_00004.png",
+      "extracted_raw": "",
+      "retry_count": 1,
+      "address_source": "demo"
+    }
+  ]
+}

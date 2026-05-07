@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dream Neighborhood Explorer — Test Results</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#ecfdf5', 500: '#10b981', 700: '#047857', 900: '#064e3b' }
+          }
+        }
+      }
+    };
+  </script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+  <header class="border-b border-slate-200 bg-white/90 backdrop-blur">
+    <div class="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 md:flex-row md:items-center md:justify-between">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-widest text-brand-700">Dream Neighborhood · QA</p>
+        <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">Neighborhood Explorer runs</h1>
+        <p id="subtitle" class="mt-1 text-sm text-slate-600">Load <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs">results.json</code> from the test runner or open this dashboard over HTTP/Netlify.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium shadow-sm transition hover:border-brand-500 hover:text-brand-800">
+          <input id="fileInput" type="file" accept=".json,application/json" class="hidden" />
+          <span>Load JSON…</span>
+        </label>
+        <button id="btnReload" type="button" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium shadow-sm transition hover:border-brand-500 hover:text-brand-800">
+          Retry fetch
+        </button>
+        <button id="btnCsv" type="button" class="rounded-lg bg-brand-700 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-900">
+          Download CSV
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl space-y-8 px-4 py-8">
+    <div id="alertBox" class="hidden rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"></div>
+
+    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Total tests</p>
+        <p id="m_total" class="mt-2 text-3xl font-semibold">—</p>
+      </article>
+      <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Success rate</p>
+        <p id="m_rate" class="mt-2 text-3xl font-semibold text-emerald-700">—</p>
+      </article>
+      <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Avg time / test</p>
+        <p id="m_avg" class="mt-2 text-3xl font-semibold">—</p>
+      </article>
+      <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">States covered</p>
+        <p id="m_states" class="mt-2 text-3xl font-semibold">—</p>
+      </article>
+      <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Failures</p>
+        <p id="m_fail" class="mt-2 text-3xl font-semibold text-rose-600">—</p>
+      </article>
+    </section>
+
+    <section class="grid gap-6 lg:grid-cols-2">
+      <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-slate-800">Results by state</h2>
+          <span class="text-xs text-slate-500">Success vs failure</span>
+        </div>
+        <div class="mt-4 h-72">
+          <canvas id="chartStates"></canvas>
+        </div>
+      </div>
+      <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-slate-800">Failure reasons</h2>
+          <span class="text-xs text-slate-500">Grouped error families</span>
+        </div>
+        <div class="mt-4 h-72">
+          <canvas id="chartErrors"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div class="flex flex-col gap-4 border-b border-slate-200 p-5 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-800">All results</h2>
+          <p class="text-xs text-slate-500">Search, sort, and filter the full run. Click a row for raw details.</p>
+        </div>
+        <div class="flex w-full flex-col gap-3 md:w-auto md:flex-row md:items-center">
+          <input id="q" type="search" placeholder="Search address, state, error…" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm shadow-inner md:w-64" />
+          <select id="fState" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm md:w-40">
+            <option value="">All states</option>
+          </select>
+          <select id="fOk" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm md:w-40">
+            <option value="">Success + failures</option>
+            <option value="1">Success only</option>
+            <option value="0">Failures only</option>
+          </select>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-slate-200 text-sm">
+          <thead class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th class="cursor-pointer px-4 py-3" data-sort="id">#</th>
+              <th class="cursor-pointer px-4 py-3" data-sort="state">State</th>
+              <th class="cursor-pointer px-4 py-3" data-sort="success">OK</th>
+              <th class="cursor-pointer px-4 py-3" data-sort="duration_ms">Ms</th>
+              <th class="px-4 py-3">Neighborhood</th>
+              <th class="min-w-[12rem] px-4 py-3">Address</th>
+              <th class="min-w-[10rem] px-4 py-3">Error (snippet)</th>
+            </tr>
+          </thead>
+          <tbody id="tbody" class="divide-y divide-slate-100 bg-white"></tbody>
+        </table>
+      </div>
+      <p id="tblMeta" class="border-t border-slate-200 px-4 py-3 text-xs text-slate-500"></p>
+    </section>
+  </main>
+
+  <div id="modal" class="fixed inset-0 z-50 hidden items-end justify-center bg-slate-900/50 p-4 sm:items-center">
+    <div class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+        <div>
+          <p class="text-xs uppercase tracking-wide text-slate-500">Test detail</p>
+          <h3 id="modalTitle" class="text-base font-semibold">—</h3>
+        </div>
+        <button id="modalClose" type="button" class="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-800">Close</button>
+      </div>
+      <div class="grid gap-4 overflow-y-auto p-5" style="max-height:70vh">
+        <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <div><dt class="text-xs uppercase text-slate-500">State</dt><dd id="d_state" class="font-medium">—</dd></div>
+          <div><dt class="text-xs uppercase text-slate-500">Duration</dt><dd id="d_dur" class="font-medium">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Address</dt><dd id="d_addr" class="font-medium">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Neighborhood</dt><dd id="d_hood" class="font-medium">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Screenshot</dt><dd id="d_shot" class="break-all font-mono text-xs">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Error</dt><dd id="d_err" class="whitespace-pre-wrap text-rose-700">—</dd></div>
+        </dl>
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Metrics (extracted)</p>
+          <pre id="d_metrics" class="mt-2 overflow-x-auto rounded-xl bg-slate-900 p-3 text-xs text-emerald-100">—</pre>
+        </div>
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Raw page snapshot (trimmed)</p>
+          <pre id="d_raw" class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-900 p-3 text-xs text-slate-100">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mx-auto max-w-7xl px-4 py-10 text-center text-xs text-slate-400">
+    Static dashboard — replace <code class="rounded bg-slate-100 px-1">results.json</code> after each run and deploy the <code class="rounded bg-slate-100 px-1">dashboard/</code> folder to Netlify.
+  </footer>
+
+  <script>
+    /** @typedef {{ meta: any, results: any[] }} Payload */
+
+    const $ = (sel) => document.querySelector(sel);
+    const alertBox = $("#alertBox");
+    let payload = { meta: {}, results: [] };
+    let filtered = [];
+    let sortKey = "id";
+    let sortDir = 1;
+    let stateChart = null;
+    let errChart = null;
+
+    function showAlert(msg) {
+      alertBox.textContent = msg;
+      alertBox.classList.remove("hidden");
+    }
+    function hideAlert() {
+      alertBox.classList.add("hidden");
+      alertBox.textContent = "";
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function errorFamily(msg) {
+      if (!msg) return "No error (success path)";
+      const m = String(msg).toLowerCase();
+      if (m.includes("login")) return "Auth / login wall";
+      if (m.includes("timeout")) return "Timeouts";
+      if (m.includes("no_clear_result")) return "Unclear / empty result";
+      if (m.includes("submit_click")) return "Submit / selector miss";
+      if (m.includes("playwright")) return "Playwright / navigation";
+      return "Other / unknown";
+    }
+
+    function setMeta(m) {
+      $("#m_total").textContent = m.total_tests ?? payload.results.length ?? "0";
+      $("#m_rate").textContent =
+        m.success_rate != null ? `${Number(m.success_rate).toFixed(2)}%` : "—";
+      $("#m_avg").textContent =
+        m.avg_duration_ms != null ? `${Math.round(m.avg_duration_ms)} ms` : "—";
+      $("#m_states").textContent = m.states_covered ?? "—";
+      $("#m_fail").textContent = m.failure_count ?? "—";
+
+      const ts = m.generated_at ? `Generated ${new Date(m.generated_at).toLocaleString()}` : "";
+      const url = m.staging_url ? ` · ${m.staging_url}` : "";
+      $("#subtitle").textContent = ts || url ? `${ts}${url}` : $("#subtitle").textContent;
+    }
+
+    function aggregateStates(rows) {
+      const map = new Map();
+      for (const r of rows) {
+        const st = r.state || "??";
+        if (!map.has(st)) map.set(st, { ok: 0, bad: 0 });
+        const b = map.get(st);
+        if (r.success) b.ok += 1;
+        else b.bad += 1;
+      }
+      const labels = [...map.keys()].sort();
+      const ok = labels.map((k) => map.get(k).ok);
+      const bad = labels.map((k) => map.get(k).bad);
+      return { labels, ok, bad };
+    }
+
+    function aggregateErrors(rows) {
+      const map = new Map();
+      for (const r of rows) {
+        if (r.success) continue;
+        const fam = errorFamily(r.error_message);
+        map.set(fam, (map.get(fam) || 0) + 1);
+      }
+      const labels = [...map.keys()];
+      const data = labels.map((k) => map.get(k));
+      return { labels, data };
+    }
+
+    function drawCharts(rows) {
+      if (!rows || !rows.length) {
+        if (stateChart) {
+          stateChart.destroy();
+          stateChart = null;
+        }
+        if (errChart) {
+          errChart.destroy();
+          errChart = null;
+        }
+        return;
+      }
+      const st = aggregateStates(rows);
+      const ctx1 = document.getElementById("chartStates");
+      const ctx2 = document.getElementById("chartErrors");
+
+      if (stateChart) stateChart.destroy();
+      if (errChart) errChart.destroy();
+
+      stateChart = new Chart(ctx1, {
+        type: "bar",
+        data: {
+          labels: st.labels,
+          datasets: [
+            {
+              label: "Success",
+              data: st.ok,
+              backgroundColor: "rgba(16,185,129,0.8)",
+              stack: "s",
+            },
+            {
+              label: "Failure",
+              data: st.bad,
+              backgroundColor: "rgba(244,63,94,0.85)",
+              stack: "s",
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: "bottom" },
+            tooltip: { mode: "index", intersect: false },
+          },
+          scales: {
+            x: { stacked: true, ticks: { maxRotation: 0, minRotation: 0 } },
+            y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+          },
+        },
+      });
+
+      const er = aggregateErrors(rows);
+      errChart = new Chart(ctx2, {
+        type: "doughnut",
+        data: {
+          labels: er.labels.length ? er.labels : ["No failures"],
+          datasets: [
+            {
+              data: er.data.length ? er.data : [1],
+              backgroundColor: [
+                "#10b981",
+                "#6366f1",
+                "#f59e0b",
+                "#f43f5e",
+                "#0ea5e9",
+                "#a855f7",
+                "#64748b",
+              ],
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: "bottom" } },
+        },
+      });
+    }
+
+    function populateStateFilter(rows) {
+      const sel = $("#fState");
+      const uniq = [...new Set(rows.map((r) => r.state).filter(Boolean))].sort();
+      sel.innerHTML = `<option value="">All states</option>` +
+        uniq.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+    }
+
+    function sortRows(key) {
+      if (sortKey === key) sortDir *= -1;
+      else {
+        sortKey = key;
+        sortDir = key === "address" || key === "error_message" ? 1 : 1;
+      }
+      const dir = sortDir;
+      const val = (r) => {
+        const v = r[key];
+        if (key === "success") return r.success ? 1 : 0;
+        if (typeof v === "number") return v;
+        if (typeof v === "boolean") return v ? 1 : 0;
+        return String(v ?? "").toLowerCase();
+      };
+      const cmp = (av, bv) => {
+        const an = typeof av === "number";
+        const bn = typeof bv === "number";
+        if (an && bn) return av - bv;
+        return String(av ?? "").localeCompare(String(bv ?? ""), undefined, { sensitivity: "base" });
+      };
+      filtered.sort((a, b) => {
+        const c = cmp(val(a), val(b));
+        if (c === 0) return 0;
+        return c * dir;
+      });
+      renderTable();
+    }
+
+    function applyFilters() {
+      const q = $("#q").value.trim().toLowerCase();
+      const st = $("#fState").value;
+      const ok = $("#fOk").value;
+
+      filtered = payload.results.filter((r) => {
+        if (st && r.state !== st) return false;
+        if (ok === "1" && !r.success) return false;
+        if (ok === "0" && r.success) return false;
+        if (!q) return true;
+        const blob = [
+          r.address,
+          r.state,
+          r.neighborhood_name,
+          r.error_message,
+          String(r.error_message || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return blob.includes(q);
+      });
+      sortKey = "id";
+      sortDir = 1;
+      filtered.sort((a, b) => a.id - b.id);
+      renderTable();
+      $("#tblMeta").textContent = `Showing ${filtered.length} of ${payload.results.length} rows`;
+    }
+
+    function renderTable() {
+      const tb = $("#tbody");
+      tb.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      for (const r of filtered) {
+        const tr = document.createElement("tr");
+        tr.className = "cursor-pointer hover:bg-emerald-50/60";
+        tr.innerHTML = `
+          <td class="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-600">${escapeHtml(r.id)}</td>
+          <td class="whitespace-nowrap px-4 py-2 font-semibold">${escapeHtml(r.state)}</td>
+          <td class="px-4 py-2">${r.success ? '<span class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">pass</span>'
+            : '<span class="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800">fail</span>'}</td>
+          <td class="whitespace-nowrap px-4 py-2 font-mono text-xs">${escapeHtml(Math.round(r.duration_ms ?? 0))}</td>
+          <td class="max-w-[14rem] truncate px-4 py-2 text-slate-800" title="${escapeHtml(r.neighborhood_name || "")}">${escapeHtml(r.neighborhood_name || "—")}</td>
+          <td class="max-w-[18rem] truncate px-4 py-2 text-slate-700" title="${escapeHtml(r.address)}">${escapeHtml(r.address)}</td>
+          <td class="max-w-[16rem] truncate px-4 py-2 text-xs text-rose-700" title="${escapeHtml(r.error_message || "")}">${escapeHtml((r.error_message || "").slice(0, 120))}</td>`;
+        tr.addEventListener("click", () => openModal(r));
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+    }
+
+    function openModal(r) {
+      $("#modal").classList.remove("hidden");
+      $("#modal").classList.add("flex");
+      $("#modalTitle").textContent = `Run #${r.id} · ${r.success ? "Success" : "Failure"}`;
+      $("#d_state").textContent = r.state ?? "—";
+      $("#d_dur").textContent = `${Math.round(r.duration_ms ?? 0)} ms`;
+      $("#d_addr").textContent = r.address ?? "—";
+      $("#d_hood").textContent = r.neighborhood_name ?? "—";
+      $("#d_shot").textContent = r.screenshot_path ?? "—";
+      $("#d_err").textContent = r.error_message ?? "—";
+      $("#d_metrics").textContent = JSON.stringify(r.metrics || {}, null, 2);
+      $("#d_raw").textContent = r.extracted_raw || "—";
+    }
+    function closeModal() {
+      $("#modal").classList.add("hidden");
+      $("#modal").classList.remove("flex");
+    }
+
+    function toCsv(rows) {
+      const cols = [
+        "id",
+        "state",
+        "success",
+        "duration_ms",
+        "neighborhood_name",
+        "address",
+        "error_message",
+        "screenshot_path",
+        "retry_count",
+        "address_source",
+      ];
+      const esc = (v) => {
+        const s = String(v ?? "");
+        if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+      const lines = [cols.join(",")];
+      for (const r of rows) {
+        lines.push(cols.map((c) => esc(r[c])).join(","));
+      }
+      return lines.join("\n");
+    }
+
+    function downloadCsv() {
+      const blob = new Blob([toCsv(filtered.length ? filtered : payload.results)], {
+        type: "text/csv;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `neighborhood-explorer-results-${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function ingest(data) {
+      hideAlert();
+      if (!data || !Array.isArray(data.results)) {
+        showAlert("Invalid JSON: expected an object with a results[] array.");
+        return;
+      }
+      payload = data;
+      const m = data.meta || {};
+      setMeta(m);
+      populateStateFilter(data.results);
+      filtered = [...data.results].sort((a, b) => a.id - b.id);
+      drawCharts(data.results);
+      $("#q").value = "";
+      $("#fOk").value = "";
+      $("#fState").value = "";
+      renderTable();
+      $("#tblMeta").textContent = `Showing ${filtered.length} of ${payload.results.length} rows`;
+    }
+
+    async function tryFetch() {
+      hideAlert();
+      try {
+        const res = await fetch("./results.json", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        ingest(await res.json());
+      } catch (e) {
+        showAlert(
+          "Could not fetch ./results.json — open this page via a static host (Netlify, npx serve) " +
+            "or use “Load JSON…”. Details: " +
+            e
+        );
+        ingest({ meta: {}, results: [] });
+      }
+    }
+
+    $("#fileInput").addEventListener("change", async (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        ingest(JSON.parse(text));
+      } catch (e) {
+        showAlert("Could not read JSON file: " + e);
+      }
+    });
+
+    $("#btnReload").addEventListener("click", tryFetch);
+    $("#btnCsv").addEventListener("click", downloadCsv);
+    $("#modalClose").addEventListener("click", closeModal);
+    $("#modal").addEventListener("click", (e) => {
+      if (e.target.id === "modal") closeModal();
+    });
+
+    ["input", "change"].forEach((evt) => {
+      $("#q").addEventListener(evt, () => {
+        window.clearTimeout($("#q")._qdeb);
+        $("#q")._qdeb = window.setTimeout(applyFilters, 180);
+      });
+      $("#fState").addEventListener(evt, applyFilters);
+      $("#fOk").addEventListener(evt, applyFilters);
+    });
+
+    document.querySelectorAll("th[data-sort]").forEach((th) => {
+      th.addEventListener("click", () => sortRows(th.getAttribute("data-sort")));
+    });
+
+    tryFetch();
+  </script>
+</body>
+</html>
