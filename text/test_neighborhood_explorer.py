@@ -137,6 +137,7 @@ def _run_meta_extras(login_env_configured: bool) -> Dict[str, Any]:
     root = f"https://github.com/{GITHUB_REPO_PATH}"
     return {
         "login_env_configured": login_env_configured,
+        "docs_start_here": f"{root}/blob/main/docs/START-HERE.md",
         "docs_running": f"{root}/blob/main/docs/RUNNING.md",
         "github_actions_workflow": f"{root}/actions/workflows/run-explorer-tests.yml",
         "note_netlify_static": (
@@ -809,6 +810,13 @@ def main() -> int:
             "staging may return a sign-in page (reported as outcome_code=login_wall). "
             "See docs/RUNNING.md.\n"
         )
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            est_min = max(1, int(len(runlist) * 2))
+            print(
+                "[!] You are in GitHub Actions WITHOUT login secrets.\n"
+                f"    Expect on the order of ~2 minutes × {len(runlist)} tests ≈ {est_min}+ minutes of wall time.\n"
+                "    Add repo secrets DREAM_NEIGHBORHOOD_EMAIL and DREAM_NEIGHBORHOOD_PASSWORD, or read docs/START-HERE.md.\n"
+            )
 
     meta_x = _run_meta_extras(had_login_config)
 

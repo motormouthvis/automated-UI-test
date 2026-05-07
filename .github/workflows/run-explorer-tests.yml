@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       count:
-        description: Number of addresses to test
+        description: Number of addresses (start with 3 while testing)
         type: number
-        default: 25
+        default: 3
       headless:
         description: Run browser headless
         type: boolean
         default: true
+      skip_login_check:
+        description: Expert only — allow missing login secrets (each test ~2 min, mostly failures)
+        type: boolean
+        default: false
 
 jobs:
   explore:
@@ -18,6 +22,20 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require staging login secrets (read docs/START-HERE.md)
+        if: ${{ github.event.inputs.skip_login_check != 'true' }}
+        env:
+          DREAM_NEIGHBORHOOD_EMAIL: ${{ secrets.DREAM_NEIGHBORHOOD_EMAIL }}
+          DREAM_NEIGHBORHOOD_PASSWORD: ${{ secrets.DREAM_NEIGHBORHOOD_PASSWORD }}
+        run: |
+          if [ -z "$DREAM_NEIGHBORHOOD_EMAIL" ] || [ -z "$DREAM_NEIGHBORHOOD_PASSWORD" ]; then
+            echo "::error::Missing secrets. Add BOTH: DREAM_NEIGHBORHOOD_EMAIL and DREAM_NEIGHBORHOOD_PASSWORD"
+            echo "Where: Repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "Why: Without them staging shows sign-in; each test waits ~2 minutes. See docs/START-HERE.md"
+            exit 1
+          fi
+          echo "Login secrets present. Run should be much faster than without them."
 
       - uses: actions/setup-python@v5
         with:

@@ -51,8 +51,9 @@
       <ul class="mt-3 list-inside list-disc space-y-1 text-indigo-900/90">
         <li>
           <strong>Local (Windows / Mac / Linux):</strong>
-          <a id="linkDocs" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/blob/main/docs/RUNNING.md" target="_blank" rel="noopener">docs/RUNNING.md</a>
-          — venv, <code class="rounded bg-white/80 px-1">playwright install chromium</code>, env vars, <code class="rounded bg-white/80 px-1">--headed</code> / <code class="rounded bg-white/80 px-1">--live-port</code>.
+          <a id="linkEasy" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/blob/main/docs/START-HERE.md" target="_blank" rel="noopener">START-HERE.md (simplest)</a>
+          ·
+          <a id="linkDocs" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/blob/main/docs/RUNNING.md" target="_blank" rel="noopener">full RUNNING.md</a>
         </li>
         <li>
           <strong>GitHub (closest to “run from the web”):</strong>
@@ -257,8 +258,10 @@
 
     function applyHelpFromMeta(m) {
       if (!m) return;
+      const easy = m.docs_start_here || "https://github.com/motormouthvis/automated-UI-test/blob/main/docs/START-HERE.md";
       const docs = m.docs_running;
       const gha = m.github_actions_workflow;
+      if (easy) $("#linkEasy").href = easy;
       if (docs) $("#linkDocs").href = docs;
       if (gha) $("#linkActions").href = gha;
       const lw = $("#loginWarning");

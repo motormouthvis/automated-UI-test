@@ -1,6 +1,6 @@
 # Running Dream Neighborhood Explorer tests
 
-## Why you cannot “click Run” on Netlify alone
+Too much detail? Read **[START-HERE.md](START-HERE.md)** first (kid-friendly explanation).
 
 Netlify hosts **static files** (HTML, JSON, JS). Playwright needs a real **Python + Chromium** process on a machine you control. Visiting your Netlify URL in a browser does **not** give that environment, so the test suite cannot start from the Netlify page by itself.
 
