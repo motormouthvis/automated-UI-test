@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       count:
-        description: Number of addresses (start with 3 while testing)
+        description: How many addresses (1-1000). Use 1-2 for a quick sanity check.
         type: number
-        default: 3
+        default: 2
       headless:
         description: Run browser headless
         type: boolean
@@ -37,6 +37,18 @@ jobs:
           fi
           echo "Login secrets present. Run should be much faster than without them."
 
+      - name: Validate count is 1-1000
+        run: |
+          C='${{ github.event.inputs.count }}'
+          case "$C" in
+            ''|*[!0-9]*) echo "::error::count must be a number"; exit 1 ;;
+          esac
+          if [ "$C" -lt 1 ] || [ "$C" -gt 1000 ]; then
+            echo "::error::count must be between 1 and 1000 (got $C)"
+            exit 1
+          fi
+          echo "OK: count=$C"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -52,8 +64,8 @@ jobs:
           DREAM_NEIGHBORHOOD_PASSWORD: ${{ secrets.DREAM_NEIGHBORHOOD_PASSWORD }}
         run: |
           python text/test_neighborhood_explorer.py \
-            --count ${{ inputs.count }} \
-            --headless ${{ inputs.headless }} \
+            --count ${{ github.event.inputs.count }} \
+            --headless ${{ github.event.inputs.headless }} \
             --output results-ci.json
 
       - name: Stage files for artifact

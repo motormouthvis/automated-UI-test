@@ -35,6 +35,9 @@ USAGE EXAMPLES
   python text/test_neighborhood_explorer.py --count 10 --headed
   python text/test_neighborhood_explorer.py --count 1000 --output my_results.json --delay 0.5
 
+  --count is capped between 1 and 1000. Default is 2 (quick smoke check).
+  The dashboard can use ?count=N or the smoke-size control to copy the same number.
+
   Live dashboard (local): serves dashboard/ on http://127.0.0.1:<port> and
   updates live_state.json after every address. Open:
     http://127.0.0.1:8765/?live=1
@@ -128,6 +131,9 @@ ALL_US_STATE_CODES: List[str] = [
 ]
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+MIN_ADDRESS_COUNT = 1
+MAX_ADDRESS_COUNT = 1000
+DEFAULT_ADDRESS_COUNT = 2
 _DEFAULT_ARTIFACTS = _REPO_ROOT / "artifacts" / "screenshots"
 # Repository slug for help links in exported JSON (override in CI with GITHUB_REPOSITORY).
 GITHUB_REPO_PATH = os.environ.get("GITHUB_REPOSITORY", "motormouthvis/automated-UI-test")
@@ -762,9 +768,26 @@ def _str2bool(value: str) -> bool:
     raise argparse.ArgumentTypeError("expected true/false for --headless")
 
 
+def _parse_address_count(value: str) -> int:
+    try:
+        n = int(str(value).strip(), 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--count must be an integer") from exc
+    if n < MIN_ADDRESS_COUNT or n > MAX_ADDRESS_COUNT:
+        raise argparse.ArgumentTypeError(
+            f"--count must be between {MIN_ADDRESS_COUNT} and {MAX_ADDRESS_COUNT} (got {n})"
+        )
+    return n
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Dream Neighborhood Explorer load test")
-    p.add_argument("--count", type=int, default=1000, help="Number of addresses to test")
+    p.add_argument(
+        "--count",
+        type=_parse_address_count,
+        default=DEFAULT_ADDRESS_COUNT,
+        help=f"How many addresses to test ({MIN_ADDRESS_COUNT}-{MAX_ADDRESS_COUNT}). Default {DEFAULT_ADDRESS_COUNT} for smoke runs.",
+    )
     p.add_argument("--headless", type=_str2bool, default=True, nargs="?", const=True, help="true|false (default: true)")
     p.add_argument("--output", type=str, default=str(_REPO_ROOT / "results.json"))
     p.add_argument("--delay", type=float, default=0.0, help="Seconds to sleep between tests")
@@ -796,7 +819,7 @@ def main() -> int:
     dashboard_dir.mkdir(parents=True, exist_ok=True)
     live_path = dashboard_dir / "live_state.json"
 
-    runlist = build_address_runlist(min(args.count, 50_000))
+    runlist = build_address_runlist(min(args.count, MAX_ADDRESS_COUNT))
     if len(runlist) > args.count:
         runlist = runlist[: args.count]
 

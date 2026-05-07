@@ -23,6 +23,15 @@ It does **nothing** until something else (the robot) finishes and **creates** th
 
 ---
 
+## How many addresses? (1–1000)
+
+Use **`--count`** on the command line or the **count** field when you run the workflow in GitHub. Allowed range: **1 to 1000**.  
+**Start with 1 or 2** for a sanity check. The script’s default is **2**.  
+
+On the Netlify dashboard you can set **`?count=5`** in the URL or use the **Smoke run size** box — that only helps you copy the same number; it does **not** run tests by itself.
+
+---
+
 ## What went wrong in your GitHub run
 
 You saw:
