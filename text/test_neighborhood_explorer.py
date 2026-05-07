@@ -326,7 +326,14 @@ def _maybe_login(page: Page) -> None:
         password, timeout=LOGIN_ACTION_TIMEOUT_MS
     )
     form.locator('button[type="submit"], input[type="submit"]').first.click(timeout=LOGIN_ACTION_TIMEOUT_MS)
-    page.wait_for_load_state("networkidle", timeout=NAVIGATION_TIMEOUT_MS)
+    # Login often redirects to …/core/ (hub). SPA sites also keep the network busy, so
+    # wait_for_load_state("networkidle") commonly times out after "load" already fired.
+    try:
+        page.wait_for_load_state("load", timeout=LOGIN_ACTION_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        pass
+    # Always open the explorer deep link (embed + map); do not rely on post-login default route.
+    page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
 
 
 def _widget_host(page: Page) -> ExplorerCtx:
