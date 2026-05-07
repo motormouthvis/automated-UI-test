@@ -74,7 +74,7 @@ from dataclasses import asdict, dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from faker import Faker
 from random_address import real_random_address, real_random_address_by_state
@@ -338,6 +338,11 @@ def _maybe_login(page: Page) -> None:
     page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
 
 
+def _interaction_is_iframe_surface(ctx: ExplorerCtx) -> bool:
+    """True when typing runs in a Frame/FrameLocator (embedded document), not the top-level Page."""
+    return isinstance(ctx, (Frame, FrameLocator))
+
+
 def _widget_host(page: Page) -> ExplorerCtx:
     """Prefer <main> for dashboard / right-hand panel reads."""
     if not WIDGET_HOST_SELECTOR:
@@ -350,34 +355,12 @@ def _widget_host(page: Page) -> ExplorerCtx:
         return page
 
 
-def _frame_with_explorer_input(page: Page) -> Optional[Frame]:
-    """
-    Find a *child* frame whose document contains the Google Places / map search field.
-    The visible "Current location …" control on explore-neighborhoods is not in <main>.
-    """
-    deadline = time.monotonic() + EXPLORER_IFRAME_PROBE_MS / 1000.0
-    while time.monotonic() < deadline:
-        for frame in list(page.frames):
-            if frame == page.main_frame:
-                continue
-            loc = frame.locator(ADDRESS_INPUT_SELECTOR).first
-            try:
-                loc.wait_for(state="visible", timeout=500)
-                return frame
-            except PlaywrightTimeoutError:
-                continue
-            except Exception:
-                continue
-        page.wait_for_timeout(250)
-    return None
-
-
 def _explorer_surfaces(page: Page) -> tuple[ExplorerCtx, ExplorerCtx, bool]:
     """
     Return (interaction_context, read_context, used_iframe).
 
-    Typing, Places pick, and map CTA usually run inside an embedded frame; titles/metrics
-    may render in the parent app (main).
+    The map search is often in a child frame *or* in the shell's light DOM beside the map
+    (not inside <main>), which is why main-only locators kept failing with Iframe: no.
     """
     read = _widget_host(page)
     if IFRAME_SELECTOR:
@@ -386,10 +369,60 @@ def _explorer_surfaces(page: Page) -> tuple[ExplorerCtx, ExplorerCtx, bool]:
         except PlaywrightTimeoutError:
             pass
         if page.locator(IFRAME_SELECTOR).count() >= 1:
-            return page.frame_locator(IFRAME_SELECTOR), read, True
-    frame = _frame_with_explorer_input(page)
-    if frame is not None:
-        return frame, read, True
+            fl = page.frame_locator(IFRAME_SELECTOR)
+            return fl, read, _interaction_is_iframe_surface(fl)
+
+    deadline = time.monotonic() + EXPLORER_IFRAME_PROBE_MS / 1000.0
+    # Any visible text field inside a child frame (Places/input attrs vary by build).
+    loose = (
+        'input:visible:not([type="hidden"]):not([type="file"]):not([type="checkbox"])'
+        ':not([type="radio"]):not([type="button"]):not([type="submit"])'
+    )
+    child_selectors: Tuple[str, ...] = (
+        ADDRESS_INPUT_SELECTOR,
+        'input[type="search"]',
+        'input[autocomplete="off"]',
+        'input[aria-autocomplete="list"]',
+        loose,
+    )
+    while time.monotonic() < deadline:
+        for frame in [f for f in list(page.frames) if f != page.main_frame]:
+            for sel in child_selectors:
+                loc = frame.locator(sel).first
+                try:
+                    loc.wait_for(state="visible", timeout=900)
+                    return frame, read, True
+                except PlaywrightTimeoutError:
+                    continue
+                except Exception:
+                    continue
+        page.wait_for_timeout(250)
+
+    # Light DOM on the top-level page (next to map iframe — not necessarily under <main>).
+    page_try: List[tuple[str, Any]] = [
+        ("pac-target-input", page.locator("input.pac-target-input").first),
+        ("role=searchbox", page.get_by_role("searchbox").first),
+        ("role=combobox", page.get_by_role("combobox").first),
+        ("type=search", page.locator('input[type="search"]').first),
+        ("address_selector", page.locator(ADDRESS_INPUT_SELECTOR).first),
+    ]
+    for _name, probe in page_try:
+        try:
+            probe.wait_for(state="visible", timeout=3_000)
+            return page, read, False
+        except PlaywrightTimeoutError:
+            continue
+
+    # Last resort: same selectors scoped to <main> (older layouts).
+    try:
+        main_scope = page.locator("main").first
+        main_scope.wait_for(state="visible", timeout=3_000)
+        loc = main_scope.locator(ADDRESS_INPUT_SELECTOR).first
+        loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+        return main_scope, read, False
+    except PlaywrightTimeoutError:
+        pass
+
     return read, read, False
 
 
@@ -398,16 +431,29 @@ def _locate(ctx: ExplorerCtx, selector: str):
 
 
 def _resolve_address_input(ctx: ExplorerCtx):
-    """Visible map search / Google Places input inside the widget host."""
-    try:
-        loc = ctx.locator(ADDRESS_INPUT_SELECTOR).first
-        loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
-        return loc
-    except PlaywrightTimeoutError:
-        pass
-    loc = ctx.get_by_label(re.compile(r"current\s+location", re.I)).first
-    loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
-    return loc
+    """Find the visible map / Places field — attributes differ by shell vs embed vs React version."""
+    builders = [
+        lambda: ctx.locator(ADDRESS_INPUT_SELECTOR).first,
+        lambda: ctx.locator("input.pac-target-input").first,
+        lambda: ctx.get_by_role("searchbox").first,
+        lambda: ctx.get_by_role("combobox").first,
+        lambda: ctx.locator('input[type="search"]').first,
+        lambda: ctx.get_by_label(re.compile(r"current\s+location", re.I)).first,
+        lambda: ctx.get_by_placeholder(re.compile(r"search|address|location", re.I)).first,
+    ]
+    last: Optional[Exception] = None
+    for mk in builders:
+        try:
+            loc = mk()
+            loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+            return loc
+        except PlaywrightTimeoutError as exc:
+            last = exc
+        except Exception as exc:
+            last = exc
+    raise PlaywrightTimeoutError(
+        f"Could not find explorer address control after {len(builders)} strategies: {last!r}"
+    ) from last
 
 
 def _select_first_places_suggestion(page: Page, interact_ctx: ExplorerCtx) -> bool:
