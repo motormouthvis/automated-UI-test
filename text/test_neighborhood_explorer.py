@@ -34,6 +34,18 @@ USAGE EXAMPLES
 ================================================================================
   python text/test_neighborhood_explorer.py --count 10 --headed
   python text/test_neighborhood_explorer.py --count 1000 --output my_results.json --delay 0.5
+
+  Live dashboard (local): serves dashboard/ on http://127.0.0.1:<port> and
+  updates live_state.json after every address. Open:
+    http://127.0.0.1:8765/?live=1
+  (Netlify stays static; live mode is only while the Python process runs.)
+
+================================================================================
+WAITING FOR RESULTS
+================================================================================
+  After submit, the script waits for an error banner, a non-empty neighborhood
+  title, or meaningful metric rows — polling until RESULT_TIMEOUT_MS. Optional
+  LOADING_SELECTOR lets the runner wait for spinners to finish first.
 """
 
 from __future__ import annotations
@@ -43,9 +55,11 @@ import json
 import os
 import random
 import shutil
+import threading
 import time
 import traceback
 from dataclasses import asdict, dataclass
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -85,6 +99,8 @@ RESULT_READY_SELECTOR = (
 NEIGHBORHOOD_NAME_SELECTOR = "h1, h2, h3, [class*='neighborhood' i], [class*='title' i]"
 METRIC_ROW_SELECTOR = '[class*="score" i], [class*="metric" i], li:has-text("/100"), dd, dt'
 ERROR_SELECTOR = '[class*="error" i], [class*="alert" i], [role="alert"], .text-danger'
+# If the widget shows a spinner / aria-busy while fetching, tune this (set to "" to disable).
+LOADING_SELECTOR = '[class*="loading" i], [class*="spinner" i], [aria-busy="true"], [data-loading="true"]'
 
 LOGIN_EMAIL_SELECTOR = 'input[name="login"], input#id_login, input[type="email"], input[autocomplete="username"]'
 LOGIN_PASSWORD_SELECTOR = 'input[name="password"], input#id_password, input[type="password"]'
@@ -92,10 +108,15 @@ LOGIN_SUBMIT_SELECTOR = 'button[type="submit"], button:has-text("Sign in")'
 
 NAVIGATION_TIMEOUT_MS = 60_000
 ACTION_TIMEOUT_MS = 25_000
-RESULT_TIMEOUT_MS = 45_000
+RESULT_TIMEOUT_MS = 60_000
 RETRIES_PER_ADDRESS = 3
 RETRY_BASE_SLEEP_SEC = 0.75
 POST_SUBMIT_STABILITY_MS = 400
+# Minimum time after click before we start polling (lets the UI request start).
+MIN_POST_SUBMIT_WAIT_MS = 350
+RESULT_SETTLE_POLL_MS = 250
+# After success/error is detected, brief pause so late-bound text/metrics can render.
+STABILIZE_AFTER_OUTCOME_MS = 900
 
 # US state codes (50 states). ~count/20 per state when count=1000.
 ALL_US_STATE_CODES: List[str] = [
@@ -255,6 +276,61 @@ def _extract_error(ctx: Union[Page, FrameLocator]) -> Optional[str]:
     return err or None
 
 
+def _metrics_non_trivial(metrics: Dict[str, str]) -> bool:
+    for v in metrics.values():
+        s = (v or "").strip()
+        if len(s) > 3 and not s.isspace():
+            return True
+    return False
+
+
+def _wait_for_loading_done(ctx: Union[Page, FrameLocator], page: Page, overall_deadline: float) -> None:
+    if not LOADING_SELECTOR:
+        return
+    loader = ctx.locator(LOADING_SELECTOR).first
+    try:
+        loader.wait_for(state="visible", timeout=min(3_000, max(0, int((overall_deadline - time.monotonic()) * 1000))))
+    except PlaywrightTimeoutError:
+        return
+    remaining_ms = max(500, int((overall_deadline - time.monotonic()) * 1000))
+    try:
+        loader.wait_for(state="hidden", timeout=remaining_ms)
+    except PlaywrightTimeoutError:
+        pass
+
+
+def _wait_for_explorer_outcome(ctx: Union[Page, FrameLocator], page: Page) -> None:
+    """
+    Poll until we see an error, a neighborhood title, non-trivial metrics, or time out.
+    Does not assume RESULT_READY_SELECTOR is correct — uses observable text/metrics.
+    """
+    deadline = time.monotonic() + RESULT_TIMEOUT_MS / 1000.0
+    page.wait_for_timeout(MIN_POST_SUBMIT_WAIT_MS)
+    _wait_for_loading_done(ctx, page, deadline)
+
+    while time.monotonic() < deadline:
+        err = _extract_error(ctx)
+        if err:
+            break
+        name = _extract_neighborhood_name(ctx)
+        if name and len(name.strip()) > 2:
+            break
+        metrics = _extract_metrics(ctx)
+        if _metrics_non_trivial(metrics):
+            break
+        try:
+            ctx.locator(RESULT_READY_SELECTOR).first.wait_for(
+                state="visible",
+                timeout=min(RESULT_SETTLE_POLL_MS * 2, int(max(100, (deadline - time.monotonic()) * 1000))),
+            )
+        except PlaywrightTimeoutError:
+            pass
+        _wait_for_loading_done(ctx, page, deadline)
+        page.wait_for_timeout(RESULT_SETTLE_POLL_MS)
+
+    page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
+
+
 def _clear_address_field(ctx: Union[Page, FrameLocator]) -> None:
     try:
         inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
@@ -293,11 +369,7 @@ def _submit_and_collect(
 
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
-    # Result wait: visible container or settle on error banner.
-    try:
-        ctx.locator(RESULT_READY_SELECTOR).first.wait_for(state="visible", timeout=RESULT_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
-        pass
+    _wait_for_explorer_outcome(ctx, page)
 
     err = _extract_error(ctx)
     name = _extract_neighborhood_name(ctx)
@@ -417,27 +489,88 @@ def run_one(
     )
 
 
-def write_outputs(rows: List[TestRow], staging_url: str, out_path: Path) -> Dict[str, Any]:
+def compute_meta(
+    rows: List[TestRow],
+    staging_url: str,
+    *,
+    run_status: str = "complete",
+    planned_total: Optional[int] = None,
+    started_at: Optional[str] = None,
+    current: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     success_n = sum(1 for r in rows if r.success)
     fail_n = len(rows) - success_n
     dur_avg = (sum(r.duration_ms for r in rows) / len(rows)) if rows else 0.0
     states_cov = len({r.state for r in rows})
+    planned = planned_total if planned_total is not None else len(rows)
+    meta: Dict[str, Any] = {
+        "generated_at": _utc_now_iso() if run_status == "complete" else (started_at or _utc_now_iso()),
+        "staging_url": staging_url,
+        "total_tests": len(rows),
+        "planned_total": planned,
+        "completed": len(rows),
+        "run_status": run_status,
+        "success_count": success_n,
+        "failure_count": fail_n,
+        "success_rate": round((success_n / len(rows)) * 100, 3) if rows else 0.0,
+        "avg_duration_ms": round(dur_avg, 2),
+        "states_covered": states_cov,
+    }
+    if started_at:
+        meta["started_at"] = started_at
+    if current is not None:
+        meta["current"] = current
+    return meta
+
+
+def write_outputs(rows: List[TestRow], staging_url: str, out_path: Path) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
-        "meta": {
-            "generated_at": _utc_now_iso(),
-            "staging_url": staging_url,
-            "total_tests": len(rows),
-            "success_count": success_n,
-            "failure_count": fail_n,
-            "success_rate": round((success_n / len(rows)) * 100, 3) if rows else 0.0,
-            "avg_duration_ms": round(dur_avg, 2),
-            "states_covered": states_cov,
-        },
+        "meta": compute_meta(rows, staging_url, run_status="complete", planned_total=len(rows)),
         "results": [asdict(r) for r in rows],
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
+
+
+def write_live_state_file(
+    rows: List[TestRow],
+    staging_url: str,
+    out_path: Path,
+    *,
+    run_status: str,
+    planned_total: int,
+    started_at: str,
+    current: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "meta": compute_meta(
+            rows,
+            staging_url,
+            run_status=run_status,
+            planned_total=planned_total,
+            started_at=started_at,
+            current=current,
+        ),
+        "results": [asdict(r) for r in rows],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def start_dashboard_server(dashboard_dir: Path, port: int) -> ThreadingHTTPServer:
+    root = dashboard_dir.resolve()
+
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, directory=str(root), **kwargs)
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def summarize_and_print(meta: Dict[str, Any]) -> None:
@@ -476,6 +609,13 @@ def parse_args() -> argparse.Namespace:
         default=str(_DEFAULT_ARTIFACTS),
         help="Directory for failure screenshots",
     )
+    p.add_argument(
+        "--live-port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Serve dashboard/ on 127.0.0.1:PORT and refresh live_state.json after each test. Open /?live=1",
+    )
     args = p.parse_args()
     if args.headed:
         args.headless = False
@@ -486,12 +626,20 @@ def main() -> int:
     args = parse_args()
     out_path = Path(args.output).resolve()
     artifacts_dir = Path(args.artifacts_dir).resolve()
+    dashboard_dir = (_REPO_ROOT / "dashboard").resolve()
+    dashboard_dir.mkdir(parents=True, exist_ok=True)
+    live_path = dashboard_dir / "live_state.json"
 
     runlist = build_address_runlist(min(args.count, 50_000))
     if len(runlist) > args.count:
         runlist = runlist[: args.count]
 
     rows: List[TestRow] = []
+    started_at = _utc_now_iso()
+    live_server: Optional[ThreadingHTTPServer] = None
+    if args.live_port is not None and args.live_port > 0:
+        live_server = start_dashboard_server(dashboard_dir, args.live_port)
+        print(f"\nLive dashboard: http://127.0.0.1:{args.live_port}/?live=1\n")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=bool(args.headless))
@@ -503,29 +651,72 @@ def main() -> int:
 
         _maybe_login(page)
 
+        if args.live_port is not None and args.live_port > 0:
+            write_live_state_file(
+                rows,
+                STAGING_URL,
+                live_path,
+                run_status="running",
+                planned_total=len(runlist),
+                started_at=started_at,
+                current={"phase": "starting", "message": "Starting test loop…"},
+            )
+
         for i, (state, address, src) in enumerate(
             tqdm(runlist, desc="Neighborhood tests", unit="addr"),
             start=1,
         ):
+            if args.live_port is not None and args.live_port > 0:
+                write_live_state_file(
+                    rows,
+                    STAGING_URL,
+                    live_path,
+                    run_status="running",
+                    planned_total=len(runlist),
+                    started_at=started_at,
+                    current={"id": i, "state": state, "address": address, "phase": "running"},
+                )
             row = run_one(page, i, state, address, src, artifacts_dir)
             rows.append(row)
+            if args.live_port is not None and args.live_port > 0:
+                write_live_state_file(
+                    rows,
+                    STAGING_URL,
+                    live_path,
+                    run_status="running",
+                    planned_total=len(runlist),
+                    started_at=started_at,
+                    current=None,
+                )
             if args.delay > 0:
                 time.sleep(float(args.delay))
 
         context.close()
         browser.close()
 
+    if args.live_port is not None and args.live_port > 0:
+        write_live_state_file(
+            rows,
+            STAGING_URL,
+            live_path,
+            run_status="complete",
+            planned_total=len(runlist),
+            started_at=started_at,
+            current=None,
+        )
+
     meta = write_outputs(rows, STAGING_URL, out_path)["meta"]
     summarize_and_print(meta)
 
-    dashboard_dir = _REPO_ROOT / "dashboard"
-    dashboard_dir.mkdir(parents=True, exist_ok=True)
     dash_json = dashboard_dir / "results.json"
     shutil.copyfile(out_path, dash_json)
 
     print("\n✅ Testing complete!\n")
     print(f"   Wrote machine JSON: {out_path}")
     print(f"   Dashboard data:     {dash_json}")
+    if args.live_port is not None and args.live_port > 0:
+        print(f"   Live snapshot:      {live_path} (final)")
+        print("   The local server has exited; reopen live mode on the next run with --live-port.\n")
     print()
     print("✅ Dashboard ready at: dashboard/index.html")
     print()

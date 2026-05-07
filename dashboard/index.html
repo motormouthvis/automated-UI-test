@@ -24,7 +24,7 @@
       <div>
         <p class="text-xs font-semibold uppercase tracking-widest text-brand-700">Dream Neighborhood · QA</p>
         <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">Neighborhood Explorer runs</h1>
-        <p id="subtitle" class="mt-1 text-sm text-slate-600">Load <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs">results.json</code> from the test runner or open this dashboard over HTTP/Netlify.</p>
+        <p id="subtitle" data-default="Load results.json from the test runner or open this dashboard over HTTP/Netlify." class="mt-1 text-sm text-slate-600">Load <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs">results.json</code> from the test runner or open this dashboard over HTTP/Netlify.</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <label class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium shadow-sm transition hover:border-brand-500 hover:text-brand-800">
@@ -43,6 +43,14 @@
 
   <main class="mx-auto max-w-7xl space-y-8 px-4 py-8">
     <div id="alertBox" class="hidden rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"></div>
+
+    <div id="liveBanner" class="mx-auto hidden max-w-7xl items-center gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-teal-900">
+      <span class="relative flex h-3 w-3 shrink-0">
+        <span id="livePing" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400 opacity-75"></span>
+        <span class="relative inline-flex h-3 w-3 rounded-full bg-teal-500"></span>
+      </span>
+      <p id="liveBannerText" class="text-sm font-medium"></p>
+    </div>
 
     <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -157,7 +165,8 @@
   </div>
 
   <footer class="mx-auto max-w-7xl px-4 py-10 text-center text-xs text-slate-400">
-    Static dashboard — replace <code class="rounded bg-slate-100 px-1">results.json</code> after each run and deploy the <code class="rounded bg-slate-100 px-1">dashboard/</code> folder to Netlify.
+    Netlify: deploy the <code class="rounded bg-slate-100 px-1">dashboard/</code> folder and replace <code class="rounded bg-slate-100 px-1">results.json</code> after each run.
+    <span class="block pt-2">Live updates (local): run tests with <code class="rounded bg-slate-100 px-1">--live-port 8765</code> and open <code class="rounded bg-slate-100 px-1">http://127.0.0.1:8765/?live=1</code>.</span>
   </footer>
 
   <script>
@@ -171,6 +180,10 @@
     let sortDir = 1;
     let stateChart = null;
     let errChart = null;
+
+    const params = new URLSearchParams(location.search);
+    const liveMode = params.get("live") === "1";
+    let liveTimer = null;
 
     function showAlert(msg) {
       alertBox.textContent = msg;
@@ -201,7 +214,16 @@
     }
 
     function setMeta(m) {
-      $("#m_total").textContent = m.total_tests ?? payload.results.length ?? "0";
+      const running = m.run_status === "running";
+      const planned = m.planned_total != null ? m.planned_total : m.total_tests;
+      const done = m.completed != null ? m.completed : m.total_tests ?? payload.results.length;
+
+      if (running && planned != null) {
+        $("#m_total").textContent = `${done} / ${planned}`;
+      } else {
+        $("#m_total").textContent = String(m.total_tests ?? payload.results.length ?? "0");
+      }
+
       $("#m_rate").textContent =
         m.success_rate != null ? `${Number(m.success_rate).toFixed(2)}%` : "—";
       $("#m_avg").textContent =
@@ -211,7 +233,49 @@
 
       const ts = m.generated_at ? `Generated ${new Date(m.generated_at).toLocaleString()}` : "";
       const url = m.staging_url ? ` · ${m.staging_url}` : "";
-      $("#subtitle").textContent = ts || url ? `${ts}${url}` : $("#subtitle").textContent;
+      const defSub = $("#subtitle").getAttribute("data-default") || "";
+      if (m.run_status === "running") {
+        $("#subtitle").textContent = `Live run · ${done}/${planned ?? "?"} complete${ts ? " · " + ts : ""}${url}`;
+      } else {
+        $("#subtitle").textContent = ts || url ? `${ts}${url}` : defSub;
+      }
+
+      updateLiveBanner(m);
+    }
+
+    function updateLiveBanner(m) {
+      const box = $("#liveBanner");
+      const ping = $("#livePing");
+      if (!box) return;
+      if (m.run_status === "running") {
+        box.classList.remove("hidden");
+        box.classList.add("flex");
+        if (ping) ping.classList.remove("hidden");
+        const cur = m.current;
+        const planned = m.planned_total ?? "?";
+        const done = m.completed ?? m.total_tests ?? 0;
+        let line = `${done} / ${planned} completed`;
+        if (cur && cur.address) {
+          line += ` · Now #${cur.id} · ${cur.state}: ${cur.address}`;
+        } else if (cur && cur.message) {
+          line += ` · ${cur.message}`;
+        }
+        $("#liveBannerText").textContent = line;
+      } else if (m.run_status === "complete" && liveMode) {
+        box.classList.remove("hidden");
+        box.classList.add("flex");
+        if (ping) ping.classList.add("hidden");
+        box.className =
+          "mx-auto flex max-w-7xl items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-900";
+        $("#liveBannerText").textContent = "Run finished — results below are final.";
+        if (liveTimer) {
+          clearInterval(liveTimer);
+          liveTimer = null;
+        }
+      } else {
+        box.classList.add("hidden");
+        box.classList.remove("flex");
+      }
     }
 
     function aggregateStates(rows) {
@@ -464,7 +528,8 @@
       URL.revokeObjectURL(url);
     }
 
-    function ingest(data) {
+    function ingest(data, options = {}) {
+      const preserveFilters = options.preserveFilters === true;
       hideAlert();
       if (!data || !Array.isArray(data.results)) {
         showAlert("Invalid JSON: expected an object with a results[] array.");
@@ -474,28 +539,57 @@
       const m = data.meta || {};
       setMeta(m);
       populateStateFilter(data.results);
-      filtered = [...data.results].sort((a, b) => a.id - b.id);
       drawCharts(data.results);
-      $("#q").value = "";
-      $("#fOk").value = "";
-      $("#fState").value = "";
-      renderTable();
+      if (!preserveFilters) {
+        $("#q").value = "";
+        $("#fOk").value = "";
+        $("#fState").value = "";
+        filtered = [...data.results].sort((a, b) => a.id - b.id);
+        renderTable();
+      } else {
+        applyFilters();
+      }
       $("#tblMeta").textContent = `Showing ${filtered.length} of ${payload.results.length} rows`;
+    }
+
+    async function fetchLiveOnce() {
+      const res = await fetch("./live_state.json?cb=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      ingest(await res.json(), { preserveFilters: true });
     }
 
     async function tryFetch() {
       hideAlert();
+      if (liveMode) {
+        if (liveTimer) {
+          clearInterval(liveTimer);
+          liveTimer = null;
+        }
+        try {
+          await fetchLiveOnce();
+        } catch (e) {
+          showAlert(
+            "Live mode: could not load live_state.json. Start the test runner with --live-port and use the URL it prints. " +
+              e
+          );
+          ingest({ meta: { run_status: "idle" }, results: [] }, { preserveFilters: false });
+        }
+        liveTimer = window.setInterval(() => {
+          fetchLiveOnce().catch(() => {});
+        }, 900);
+        return;
+      }
       try {
         const res = await fetch("./results.json", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        ingest(await res.json());
+        ingest(await res.json(), { preserveFilters: false });
       } catch (e) {
         showAlert(
           "Could not fetch ./results.json — open this page via a static host (Netlify, npx serve) " +
             "or use “Load JSON…”. Details: " +
             e
         );
-        ingest({ meta: {}, results: [] });
+        ingest({ meta: {}, results: [] }, { preserveFilters: false });
       }
     }
 
@@ -504,7 +598,7 @@
       if (!file) return;
       try {
         const text = await file.text();
-        ingest(JSON.parse(text));
+        ingest(JSON.parse(text), { preserveFilters: false });
       } catch (e) {
         showAlert("Could not read JSON file: " + e);
       }
