@@ -1,0 +1,5 @@
+# Static dashboard lives in dashboard/ — publish that folder as the site root.
+# https://docs.netlify.com/configure-builds/file-based-configuration/
+
+[build]
+  publish = "dashboard"
