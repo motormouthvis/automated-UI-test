@@ -32,10 +32,12 @@ ADDRESS COVERAGE (50 states)
 ================================================================================
 USAGE EXAMPLES
 ================================================================================
-  python text/test_neighborhood_explorer.py --count 10 --headed
+  python text/test_neighborhood_explorer.py --headed
+
+  If you omit --count, you are prompted in the terminal (1-1000). CI/GitHub must pass --count.
   python text/test_neighborhood_explorer.py --count 1000 --output my_results.json --delay 0.5
 
-  --count is capped between 1 and 1000. Default is 2 (quick smoke check).
+  --count is 1-1000. Omit --count in a terminal to be prompted. Non-TTY uses 2.
   The dashboard can use ?count=N or the smoke-size control to copy the same number.
 
   Live dashboard (local): serves dashboard/ on http://127.0.0.1:<port> and
@@ -58,6 +60,7 @@ import json
 import os
 import random
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -757,6 +760,55 @@ def summarize_and_print(meta: Dict[str, Any]) -> None:
     print("=" * 72 + "\n")
 
 
+def _prompt_address_count() -> int:
+    print()
+    while True:
+        raw = input(
+            f"How many addresses to test? ({MIN_ADDRESS_COUNT}-{MAX_ADDRESS_COUNT}) "
+            f"[press Enter for {DEFAULT_ADDRESS_COUNT}]: "
+        ).strip()
+        if not raw:
+            return DEFAULT_ADDRESS_COUNT
+        try:
+            return _parse_address_count(raw)
+        except argparse.ArgumentTypeError as e:
+            print(f"  {e}")
+
+
+def _report_address_result(case_id: int, state: str, address: str, row: TestRow) -> str:
+    lines = [
+        "",
+        "=" * 72,
+        f"  RESULT #{case_id}  |  state={state}  |  {row.duration_ms} ms  |  success={row.success}",
+        "=" * 72,
+        f"  Address:     {address}",
+        f"  Outcome:     {row.outcome_code}",
+        f"  Neighborhood:{row.neighborhood_name or '—'}",
+    ]
+    if row.metrics:
+        lines.append("  Metrics:")
+        for k, v in list(row.metrics.items())[:12]:
+            lines.append(f"    · {v}")
+        if len(row.metrics) > 12:
+            lines.append(f"    · … (+{len(row.metrics) - 12} more)")
+    else:
+        lines.append("  Metrics:     (none extracted)")
+    err = row.error_message or "—"
+    if len(err) > 240:
+        err = err[:237] + "…"
+    lines.append(f"  Error text:  {err}")
+    diag = row.diagnosis or "—"
+    if len(diag) > 320:
+        diag = diag[:317] + "…"
+    lines.append(f"  Diagnosis:   {diag}")
+    lines.append(f"  Page URL:    {row.page_url or '—'}")
+    lines.append(f"  Iframe:      {'yes' if row.used_iframe else 'no'}")
+    if row.screenshot_path:
+        lines.append(f"  Screenshot:  {row.screenshot_path}")
+    lines.append("=" * 72)
+    return "\n".join(lines)
+
+
 def _str2bool(value: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -785,8 +837,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--count",
         type=_parse_address_count,
-        default=DEFAULT_ADDRESS_COUNT,
-        help=f"How many addresses to test ({MIN_ADDRESS_COUNT}-{MAX_ADDRESS_COUNT}). Default {DEFAULT_ADDRESS_COUNT} for smoke runs.",
+        default=None,
+        metavar="N",
+        help=(
+            f"How many addresses ({MIN_ADDRESS_COUNT}-{MAX_ADDRESS_COUNT}). "
+            f"Omit this flag in a normal terminal to be prompted. "
+            f"Non-interactive stdin defaults to {DEFAULT_ADDRESS_COUNT}."
+        ),
     )
     p.add_argument("--headless", type=_str2bool, default=True, nargs="?", const=True, help="true|false (default: true)")
     p.add_argument("--output", type=str, default=str(_REPO_ROOT / "results.json"))
@@ -813,6 +870,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.count is None:
+        if sys.stdin.isatty():
+            args.count = _prompt_address_count()
+        else:
+            args.count = DEFAULT_ADDRESS_COUNT
     out_path = Path(args.output).resolve()
     artifacts_dir = Path(args.artifacts_dir).resolve()
     dashboard_dir = (_REPO_ROOT / "dashboard").resolve()
@@ -889,6 +951,7 @@ def main() -> int:
                 )
             row = run_one(page, i, state, address, src, artifacts_dir, had_login_config)
             rows.append(row)
+            tqdm.write(_report_address_result(i, state, address, row))
             if args.live_port is not None and args.live_port > 0:
                 write_live_state_file(
                     rows,

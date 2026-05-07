@@ -2,6 +2,21 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Neighborhood Explorer: prompt for count (show browser)",
+      "type": "shell",
+      "command": "python text/test_neighborhood_explorer.py --headed",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Neighborhood Explorer: smoke (2, show browser)",
       "type": "shell",
       "command": "python text/test_neighborhood_explorer.py --count 2 --headed",

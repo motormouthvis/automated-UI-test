@@ -40,7 +40,7 @@ If you skip this, you should expect many `login_wall` outcomes in `results.json`
 You can treat this like any other Python project—output shows in the **integrated terminal**, and JSON opens in the editor.
 
 1. **Python interpreter:** choose your venv in Cursor (**Python: Select Interpreter** → `.venv`).
-2. **One-click run:** **Terminal → Run Task…** (or `Ctrl+Shift+B` if you bind it) → pick **Neighborhood Explorer: smoke (2, show browser)** or **custom count…**.
+2. **One-click run:** **Terminal → Run Task…** → **Neighborhood Explorer: prompt for count (show browser)** — it will ask how many addresses (1–1000) and print a full report after each one. Or use **smoke (2)** / **custom count** tasks. From any terminal: `python text/test_neighborhood_explorer.py --headed` (omit `--count` to be prompted).
 3. **Breakpoints:** open **Run and Debug** (`Ctrl+Shift+D`) → choose **Explorer: smoke (2, headed)** (or single-address) → Start.
 4. **See numbers here:** when the run finishes, open **`dashboard/results.json`** or **`results.json`** with **Quick Open** (`Ctrl+P`). The pretty charts need a browser: either open **`dashboard/index.html`** with the **Live Server** extension, or in a terminal: `cd dashboard` then `python -m http.server 8766` and visit [http://localhost:8766](http://localhost:8766).
 5. **Live updating charts while tests run:** use task **Neighborhood Explorer: live dashboard + smoke**, then in a browser open [http://127.0.0.1:8765/?live=1](http://127.0.0.1:8765/?live=1).
@@ -58,11 +58,10 @@ Copy working locators into the `CONFIG` block at the top of `text/test_neighborh
 ### 5. Run a small smoke batch
 
 ```powershell
-python text/test_neighborhood_explorer.py --count 5 --headed
+python text/test_neighborhood_explorer.py --headed
 ```
 
-- **`--headed`**: shows the browser (best for debugging).
-- **`--count`**: number of addresses.
+- Omit **`--count`** to be prompted in the terminal, or set **`--count 5`** explicitly.
 
 Output:
 
