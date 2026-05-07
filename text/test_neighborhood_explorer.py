@@ -58,7 +58,7 @@ import shutil
 import threading
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +129,21 @@ ALL_US_STATE_CODES: List[str] = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_ARTIFACTS = _REPO_ROOT / "artifacts" / "screenshots"
+# Repository slug for help links in exported JSON (override in CI with GITHUB_REPOSITORY).
+GITHUB_REPO_PATH = os.environ.get("GITHUB_REPOSITORY", "motormouthvis/automated-UI-test")
+
+
+def _run_meta_extras(login_env_configured: bool) -> Dict[str, Any]:
+    root = f"https://github.com/{GITHUB_REPO_PATH}"
+    return {
+        "login_env_configured": login_env_configured,
+        "docs_running": f"{root}/blob/main/docs/RUNNING.md",
+        "github_actions_workflow": f"{root}/actions/workflows/run-explorer-tests.yml",
+        "note_netlify_static": (
+            "Netlify serves this dashboard as static files only. It cannot start Playwright from your browser. "
+            "Use local Python (see docs) or GitHub Actions to produce results.json."
+        ),
+    }
 
 
 @dataclass
@@ -145,6 +160,11 @@ class TestRow:
     extracted_raw: str
     retry_count: int = 0
     address_source: str = "random-address"
+    outcome_code: str = ""
+    diagnosis: str = ""
+    page_url: str = ""
+    used_iframe: bool = False
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
 
 def _utc_now_iso() -> str:
@@ -226,16 +246,16 @@ def _maybe_login(page: Page) -> None:
     page.wait_for_load_state("networkidle", timeout=NAVIGATION_TIMEOUT_MS)
 
 
-def _get_context(page: Page) -> Union[Page, FrameLocator]:
+def _get_context(page: Page) -> tuple[Union[Page, FrameLocator], bool]:
     if not IFRAME_SELECTOR:
-        return page
+        return page, False
     try:
         page.wait_for_selector(IFRAME_SELECTOR, timeout=12_000)
     except PlaywrightTimeoutError:
-        return page
+        return page, False
     if page.locator(IFRAME_SELECTOR).count() < 1:
-        return page
-    return page.frame_locator(IFRAME_SELECTOR)
+        return page, False
+    return page.frame_locator(IFRAME_SELECTOR), True
 
 
 def _locate(ctx: Union[Page, FrameLocator], selector: str):
@@ -331,6 +351,69 @@ def _wait_for_explorer_outcome(ctx: Union[Page, FrameLocator], page: Page) -> No
     page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
 
 
+def _build_outcome(
+    *,
+    login_wall: bool,
+    had_login_config: bool,
+    err_ui: Optional[str],
+    name: Optional[str],
+    metrics: Dict[str, str],
+    raw_blob: str,
+    error_msg: Optional[str],
+    success: bool,
+    page_url: str,
+    used_iframe: bool,
+) -> tuple[str, str, Dict[str, Any]]:
+    evidence: Dict[str, Any] = {
+        "page_url": page_url,
+        "used_iframe": used_iframe,
+        "login_wall_text_detected": login_wall,
+        "error_banner_text": ((err_ui or "")[:800] if err_ui else None),
+        "neighborhood_candidate": name,
+        "metric_count": len(metrics),
+        "trimmed_body_chars": len(raw_blob or ""),
+        "trimmed_body_words": len((raw_blob or "").split()),
+        "login_env_was_configured_at_run_start": had_login_config,
+    }
+    if success:
+        return (
+            "success",
+            "After submit, the runner observed a neighborhood title (and no blocking error UI) or meaningful metric lines. "
+            "This is an automation pass from selectors heuristics — visually confirm with Playwright trace/screenshots if needed.",
+            evidence,
+        )
+    if login_wall:
+        d = (
+            "The captured DOM included Dream Neighborhood’s sign-in experience (e.g. ‘Sign in to your account’). "
+            "That is a session/authentication outcome — it is not caused by the street address itself. "
+            "Common causes: missing staging credentials, expired session cookie, failed auto-login, or a redirect to /accounts/login/."
+        )
+        if not had_login_config:
+            d += " This run had no DREAM_NEIGHBORHOOD_EMAIL / DREAM_NEIGHBORHOOD_PASSWORD in the environment."
+        else:
+            d += " Credentials were present at run start; the session may have expired later or navigation dropped auth."
+        return "login_wall", d, evidence
+    if err_ui:
+        return (
+            "widget_error",
+            "Matched an error/alert region in the widget. See error_banner_text in evidence for the visible message.",
+            {**evidence, "error_banner_text": (err_ui or "")[:800]},
+        )
+    if error_msg and "submit_click" in error_msg:
+        return (
+            "submit_failed",
+            f"The submit control or Enter-key path failed. Technical detail: {error_msg}",
+            evidence,
+        )
+    return (
+        "unclear_result",
+        "After the full wait window, no neighborhood title, widget error, or useful metrics appeared. "
+        "Most often IFRAME_SELECTOR, ADDRESS_INPUT_SELECTOR, or SUBMIT_BUTTON_SELECTOR are wrong for the current UI — "
+        "re-record with `playwright codegen` on the staging explorer URL and update the CONFIG block in the script.",
+        evidence,
+    )
+
+
 def _clear_address_field(ctx: Union[Page, FrameLocator]) -> None:
     try:
         inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
@@ -350,7 +433,21 @@ def _submit_and_collect(
     address: str,
     artifacts_dir: Path,
     case_id: int,
-) -> tuple[bool, Optional[str], Dict[str, str], Optional[str], str, Optional[str]]:
+    used_iframe: bool,
+    had_login_config: bool,
+) -> tuple[
+    bool,
+    Optional[str],
+    Dict[str, str],
+    Optional[str],
+    str,
+    Optional[str],
+    str,
+    str,
+    str,
+    bool,
+    Dict[str, Any],
+]:
     error_msg: Optional[str] = None
     _clear_address_field(ctx)
     inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
@@ -386,7 +483,7 @@ def _submit_and_collect(
     login_wall = "sign in to your account" in (raw_blob or "").lower()
     if login_wall:
         success = False
-        error_msg = error_msg or "login_required_or_session_expired"
+        error_msg = error_msg or "login_wall_detected_in_dom"
     else:
         success = bool(name) and not err
         if err:
@@ -397,6 +494,20 @@ def _submit_and_collect(
                 success = False
                 error_msg = error_msg or "no_clear_result"
 
+    page_url = page.url
+    outcome_code, diagnosis, evidence = _build_outcome(
+        login_wall=login_wall,
+        had_login_config=had_login_config,
+        err_ui=err,
+        name=name,
+        metrics=metrics,
+        raw_blob=raw_blob,
+        error_msg=error_msg,
+        success=success,
+        page_url=page_url,
+        used_iframe=used_iframe,
+    )
+
     shot: Optional[str] = None
     if not success:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -406,7 +517,7 @@ def _submit_and_collect(
         except Exception:
             shot = None
 
-    return success, name, metrics, error_msg, raw_blob[:12_000], shot
+    return success, name, metrics, error_msg, raw_blob[:12_000], shot, outcome_code, diagnosis, page_url, used_iframe, evidence
 
 
 def run_one(
@@ -416,6 +527,7 @@ def run_one(
     address: str,
     source_tag: str,
     artifacts_dir: Path,
+    had_login_config: bool,
 ) -> TestRow:
     started = time.perf_counter()
     last_exc: Optional[str] = None
@@ -423,9 +535,27 @@ def run_one(
     for attempt in range(1, RETRIES_PER_ADDRESS + 1):
         try:
             page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-            ctx = _get_context(page)
-            ok, name, metrics, err, raw, shot = _submit_and_collect(
-                page, ctx, address, artifacts_dir, case_id
+            ctx, used_iframe = _get_context(page)
+            (
+                ok,
+                name,
+                metrics,
+                err,
+                raw,
+                shot,
+                outcome_code,
+                diagnosis,
+                page_url,
+                used_iframe_flag,
+                evidence,
+            ) = _submit_and_collect(
+                page,
+                ctx,
+                address,
+                artifacts_dir,
+                case_id,
+                used_iframe,
+                had_login_config,
             )
             dur_ms = (time.perf_counter() - started) * 1000.0
             row = TestRow(
@@ -441,6 +571,11 @@ def run_one(
                 extracted_raw=raw,
                 retry_count=attempt - 1,
                 address_source=source_tag,
+                outcome_code=outcome_code,
+                diagnosis=diagnosis,
+                page_url=page_url,
+                used_iframe=used_iframe_flag,
+                evidence=evidence,
             )
             if ok:
                 return row
@@ -472,6 +607,14 @@ def run_one(
             extracted_raw=last.extracted_raw,
             retry_count=RETRIES_PER_ADDRESS,
             address_source=source_tag,
+            outcome_code="retry_exhausted",
+            diagnosis=(
+                f"Still failing after {RETRIES_PER_ADDRESS} full attempts. Last error: {last_exc or last.error_message}. "
+                f"Previous diagnosis: {last.diagnosis}"
+            ),
+            page_url=last.page_url,
+            used_iframe=last.used_iframe,
+            evidence={**last.evidence, "retry_exhausted": True, "last_error": last_exc},
         )
     return TestRow(
         id=case_id,
@@ -486,6 +629,11 @@ def run_one(
         extracted_raw=traceback.format_exc()[-12_000:],
         retry_count=RETRIES_PER_ADDRESS,
         address_source=source_tag,
+        outcome_code="exception",
+        diagnosis=f"A Playwright exception escaped the inner retry loop: {last_exc}",
+        page_url=getattr(page, "url", "") or "",
+        used_iframe=False,
+        evidence={"exception": last_exc or "unknown"},
     )
 
 
@@ -497,6 +645,7 @@ def compute_meta(
     planned_total: Optional[int] = None,
     started_at: Optional[str] = None,
     current: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     success_n = sum(1 for r in rows if r.success)
     fail_n = len(rows) - success_n
@@ -520,12 +669,26 @@ def compute_meta(
         meta["started_at"] = started_at
     if current is not None:
         meta["current"] = current
+    if extra:
+        meta.update(extra)
     return meta
 
 
-def write_outputs(rows: List[TestRow], staging_url: str, out_path: Path) -> Dict[str, Any]:
+def write_outputs(
+    rows: List[TestRow],
+    staging_url: str,
+    out_path: Path,
+    *,
+    login_env_configured: bool,
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
-        "meta": compute_meta(rows, staging_url, run_status="complete", planned_total=len(rows)),
+        "meta": compute_meta(
+            rows,
+            staging_url,
+            run_status="complete",
+            planned_total=len(rows),
+            extra=_run_meta_extras(login_env_configured),
+        ),
         "results": [asdict(r) for r in rows],
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -542,6 +705,7 @@ def write_live_state_file(
     planned_total: int,
     started_at: str,
     current: Optional[Dict[str, Any]] = None,
+    meta_extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     payload: Dict[str, Any] = {
         "meta": compute_meta(
@@ -551,6 +715,7 @@ def write_live_state_file(
             planned_total=planned_total,
             started_at=started_at,
             current=current,
+            extra=meta_extra,
         ),
         "results": [asdict(r) for r in rows],
     }
@@ -634,6 +799,19 @@ def main() -> int:
     if len(runlist) > args.count:
         runlist = runlist[: args.count]
 
+    had_login_config = bool(
+        os.environ.get("DREAM_NEIGHBORHOOD_EMAIL", "").strip()
+        and os.environ.get("DREAM_NEIGHBORHOOD_PASSWORD", "").strip()
+    )
+    if not had_login_config:
+        print(
+            "\n[!] DREAM_NEIGHBORHOOD_EMAIL / DREAM_NEIGHBORHOOD_PASSWORD not both set — "
+            "staging may return a sign-in page (reported as outcome_code=login_wall). "
+            "See docs/RUNNING.md.\n"
+        )
+
+    meta_x = _run_meta_extras(had_login_config)
+
     rows: List[TestRow] = []
     started_at = _utc_now_iso()
     live_server: Optional[ThreadingHTTPServer] = None
@@ -660,6 +838,7 @@ def main() -> int:
                 planned_total=len(runlist),
                 started_at=started_at,
                 current={"phase": "starting", "message": "Starting test loop…"},
+                meta_extra=meta_x,
             )
 
         for i, (state, address, src) in enumerate(
@@ -675,8 +854,9 @@ def main() -> int:
                     planned_total=len(runlist),
                     started_at=started_at,
                     current={"id": i, "state": state, "address": address, "phase": "running"},
+                    meta_extra=meta_x,
                 )
-            row = run_one(page, i, state, address, src, artifacts_dir)
+            row = run_one(page, i, state, address, src, artifacts_dir, had_login_config)
             rows.append(row)
             if args.live_port is not None and args.live_port > 0:
                 write_live_state_file(
@@ -687,6 +867,7 @@ def main() -> int:
                     planned_total=len(runlist),
                     started_at=started_at,
                     current=None,
+                    meta_extra=meta_x,
                 )
             if args.delay > 0:
                 time.sleep(float(args.delay))
@@ -703,9 +884,10 @@ def main() -> int:
             planned_total=len(runlist),
             started_at=started_at,
             current=None,
+            meta_extra=meta_x,
         )
 
-    meta = write_outputs(rows, STAGING_URL, out_path)["meta"]
+    meta = write_outputs(rows, STAGING_URL, out_path, login_env_configured=had_login_config)["meta"]
     summarize_and_print(meta)
 
     dash_json = dashboard_dir / "results.json"

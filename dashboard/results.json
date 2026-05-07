@@ -3,11 +3,18 @@
     "generated_at": "2026-05-07T00:00:00+00:00",
     "staging_url": "https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/",
     "total_tests": 4,
+    "planned_total": 4,
+    "completed": 4,
+    "run_status": "complete",
     "success_count": 2,
     "failure_count": 2,
     "success_rate": 50.0,
     "avg_duration_ms": 1850.5,
-    "states_covered": 3
+    "states_covered": 4,
+    "login_env_configured": false,
+    "docs_running": "https://github.com/motormouthvis/automated-UI-test/blob/main/docs/RUNNING.md",
+    "github_actions_workflow": "https://github.com/motormouthvis/automated-UI-test/actions/workflows/run-explorer-tests.yml",
+    "note_netlify_static": "Netlify serves this dashboard as static files only. It cannot start Playwright from your browser. Use local Python (see docs) or GitHub Actions to produce results.json."
   },
   "results": [
     {
@@ -17,58 +24,79 @@
       "success": true,
       "duration_ms": 1420.25,
       "neighborhood_name": "Sample District (demo)",
-      "metrics": {
-        "metric_1": "Liveability index: 82 / 100"
-      },
+      "metrics": { "metric_1": "Liveability index: 82 / 100" },
       "error_message": null,
       "screenshot_path": null,
-      "extracted_raw": "Demo snapshot text… Replace this file by running text/test_neighborhood_explorer.py.",
+      "extracted_raw": "Demo snapshot…",
       "retry_count": 0,
-      "address_source": "demo"
+      "address_source": "demo",
+      "outcome_code": "success",
+      "diagnosis": "After submit, the runner observed a neighborhood title (demo data).",
+      "page_url": "https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/",
+      "used_iframe": false,
+      "evidence": { "metric_count": 1, "login_wall_text_detected": false, "trimmed_body_words": 12 }
     },
     {
       "id": 2,
       "address": "456 Ocean Dr, Miami Beach, FL 33139",
       "state": "FL",
       "success": false,
-      "duration_ms": 2103.4,
+      "duration_ms": 2389.0,
       "neighborhood_name": null,
       "metrics": {},
-      "error_message": "login_required_or_session_expired",
+      "error_message": "login_wall_detected_in_dom",
       "screenshot_path": null,
       "extracted_raw": "Sign in to your account …",
-      "retry_count": 2,
-      "address_source": "demo"
+      "retry_count": 0,
+      "address_source": "demo",
+      "outcome_code": "login_wall",
+      "diagnosis": "The captured DOM included a sign-in screen — this reflects staging auth/session, not something special about Florida. Configure DREAM_NEIGHBORHOOD_EMAIL/PASSWORD (see docs/RUNNING.md).",
+      "page_url": "https://staging.dreamneighborhood.com/accounts/login/",
+      "used_iframe": false,
+      "evidence": {
+        "login_wall_text_detected": true,
+        "login_env_was_configured_at_run_start": false,
+        "metric_count": 0,
+        "trimmed_body_words": 25
+      }
     },
     {
       "id": 3,
       "address": "789 Peachtree St NE, Atlanta, GA 30308",
       "state": "GA",
       "success": true,
-      "duration_ms": 980.1,
+      "duration_ms": 500.0,
       "neighborhood_name": "Midtown Atlanta (demo)",
-      "metrics": {
-        "metric_1": "Walk score: 91"
-      },
+      "metrics": { "metric_1": "Walk score: 91" },
       "error_message": null,
       "screenshot_path": null,
-      "extracted_raw": "Demo snapshot text…",
+      "extracted_raw": "Demo snapshot…",
       "retry_count": 0,
-      "address_source": "demo"
+      "address_source": "demo",
+      "outcome_code": "success",
+      "diagnosis": "Pass (demo row).",
+      "page_url": "https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/",
+      "used_iframe": true,
+      "evidence": { "used_iframe": true, "metric_count": 1 }
     },
     {
       "id": 4,
       "address": "100 Congress Ave, Austin, TX 78701",
       "state": "TX",
       "success": false,
-      "duration_ms": 2898.0,
+      "duration_ms": 2899.0,
       "neighborhood_name": null,
       "metrics": {},
       "error_message": "no_clear_result",
       "screenshot_path": "/artifacts/screenshots/fail_00004.png",
       "extracted_raw": "",
       "retry_count": 1,
-      "address_source": "demo"
+      "address_source": "demo",
+      "outcome_code": "unclear_result",
+      "diagnosis": "No neighborhood title, error banner, or metrics matched in time — usually wrong iframe or field selectors (demo row).",
+      "page_url": "https://staging.dreamneighborhood.com/a/drea-neighborhood-treasure-coast/core/explore-neighborhoods/",
+      "used_iframe": true,
+      "evidence": { "metric_count": 0, "trimmed_body_words": 0 }
     }
   ]
 }

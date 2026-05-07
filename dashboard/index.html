@@ -42,6 +42,29 @@
   </header>
 
   <main class="mx-auto max-w-7xl space-y-8 px-4 py-8">
+    <section id="howToRun" class="rounded-2xl border border-indigo-200 bg-indigo-50/80 p-5 text-sm text-indigo-950 shadow-sm">
+      <h2 class="text-base font-semibold text-indigo-950">How to run these tests</h2>
+      <p class="mt-2 leading-relaxed text-indigo-900/90">
+        <strong>Netlify only serves this dashboard</strong> (HTML + JSON). It cannot start Playwright from your browser.
+        Generate <code class="rounded bg-white/80 px-1">results.json</code> on your machine or in GitHub Actions, then publish that file into <code class="rounded bg-white/80 px-1">dashboard/</code> for this site.
+      </p>
+      <ul class="mt-3 list-inside list-disc space-y-1 text-indigo-900/90">
+        <li>
+          <strong>Local (Windows / Mac / Linux):</strong>
+          <a id="linkDocs" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/blob/main/docs/RUNNING.md" target="_blank" rel="noopener">docs/RUNNING.md</a>
+          — venv, <code class="rounded bg-white/80 px-1">playwright install chromium</code>, env vars, <code class="rounded bg-white/80 px-1">--headed</code> / <code class="rounded bg-white/80 px-1">--live-port</code>.
+        </li>
+        <li>
+          <strong>GitHub (closest to “run from the web”):</strong>
+          <a id="linkActions" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/actions/workflows/run-explorer-tests.yml" target="_blank" rel="noopener">Actions → Run workflow</a>
+          — add repo secrets <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_EMAIL</code> / <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_PASSWORD</code>, download the <strong>explorer-results</strong> artifact, replace <code class="rounded bg-white/80 px-1">dashboard/results.json</code>, commit, push.
+        </li>
+      </ul>
+      <p id="loginWarning" class="mt-3 hidden rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-950">
+        This JSON reports <strong>no staging login env</strong> was recorded for the run. Many failures may be <code class="font-mono text-xs">login_wall</code> — that is an <strong>auth/session</strong> issue, not a property of the street address.
+      </p>
+    </section>
+
     <div id="alertBox" class="hidden rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"></div>
 
     <div id="liveBanner" class="mx-auto hidden max-w-7xl items-center gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-teal-900">
@@ -123,6 +146,8 @@
               <th class="cursor-pointer px-4 py-3" data-sort="success">OK</th>
               <th class="cursor-pointer px-4 py-3" data-sort="duration_ms">Ms</th>
               <th class="px-4 py-3">Neighborhood</th>
+              <th class="cursor-pointer px-4 py-3" data-sort="outcome_code">Outcome</th>
+              <th class="min-w-[14rem] px-4 py-3">What happened</th>
               <th class="min-w-[12rem] px-4 py-3">Address</th>
               <th class="min-w-[10rem] px-4 py-3">Error (snippet)</th>
             </tr>
@@ -147,7 +172,11 @@
         <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
           <div><dt class="text-xs uppercase text-slate-500">State</dt><dd id="d_state" class="font-medium">—</dd></div>
           <div><dt class="text-xs uppercase text-slate-500">Duration</dt><dd id="d_dur" class="font-medium">—</dd></div>
-          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Address</dt><dd id="d_addr" class="font-medium">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Outcome code</dt><dd id="d_outcome" class="font-mono text-sm font-semibold">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Diagnosis</dt><dd id="d_diagnosis" class="leading-relaxed text-slate-800">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Page URL (after wait)</dt><dd id="d_url" class="break-all font-mono text-xs text-slate-700">—</dd></div>
+          <div><dt class="text-xs uppercase text-slate-500">Iframe context</dt><dd id="d_iframe" class="font-medium">—</dd></div>
+          <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Address searched</dt><dd id="d_addr" class="font-medium">—</dd></div>
           <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Neighborhood</dt><dd id="d_hood" class="font-medium">—</dd></div>
           <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Screenshot</dt><dd id="d_shot" class="break-all font-mono text-xs">—</dd></div>
           <div class="sm:col-span-2"><dt class="text-xs uppercase text-slate-500">Error</dt><dd id="d_err" class="whitespace-pre-wrap text-rose-700">—</dd></div>
@@ -157,8 +186,8 @@
           <pre id="d_metrics" class="mt-2 overflow-x-auto rounded-xl bg-slate-900 p-3 text-xs text-emerald-100">—</pre>
         </div>
         <div>
-          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Raw page snapshot (trimmed)</p>
-          <pre id="d_raw" class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-900 p-3 text-xs text-slate-100">—</pre>
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Evidence (structured)</p>
+          <pre id="d_evidence" class="mt-2 max-h-48 overflow-auto rounded-xl bg-slate-900 p-3 text-xs text-sky-100">—</pre>
         </div>
       </div>
     </div>
@@ -213,6 +242,32 @@
       return "Other / unknown";
     }
 
+    function failureOutcomeLabel(r) {
+      const oc = r.outcome_code;
+      if (oc === "login_wall") return "Sign-in / session wall (not address-specific)";
+      if (oc === "unclear_result") return "Unclear UI / selectors";
+      if (oc === "widget_error") return "Widget error banner";
+      if (oc === "submit_failed") return "Submit / input control";
+      if (oc === "retry_exhausted") return "Failed after retries";
+      if (oc === "exception") return "Playwright exception";
+      if (oc === "success") return "Success";
+      if (oc) return oc;
+      return errorFamily(r.error_message);
+    }
+
+    function applyHelpFromMeta(m) {
+      if (!m) return;
+      const docs = m.docs_running;
+      const gha = m.github_actions_workflow;
+      if (docs) $("#linkDocs").href = docs;
+      if (gha) $("#linkActions").href = gha;
+      const lw = $("#loginWarning");
+      if (lw) {
+        if (m.login_env_configured === false) lw.classList.remove("hidden");
+        else lw.classList.add("hidden");
+      }
+    }
+
     function setMeta(m) {
       const running = m.run_status === "running";
       const planned = m.planned_total != null ? m.planned_total : m.total_tests;
@@ -241,6 +296,7 @@
       }
 
       updateLiveBanner(m);
+      applyHelpFromMeta(m);
     }
 
     function updateLiveBanner(m) {
@@ -297,7 +353,7 @@
       const map = new Map();
       for (const r of rows) {
         if (r.success) continue;
-        const fam = errorFamily(r.error_message);
+        const fam = failureOutcomeLabel(r);
         map.set(fam, (map.get(fam) || 0) + 1);
       }
       const labels = [...map.keys()];
@@ -436,7 +492,9 @@
           r.state,
           r.neighborhood_name,
           r.error_message,
-          String(r.error_message || ""),
+          r.outcome_code,
+          r.diagnosis,
+          r.page_url,
         ]
           .join(" ")
           .toLowerCase();
@@ -456,15 +514,24 @@
       for (const r of filtered) {
         const tr = document.createElement("tr");
         tr.className = "cursor-pointer hover:bg-emerald-50/60";
+        const oc = r.outcome_code || "—";
+        const ocClass =
+          oc === "success"
+            ? "bg-emerald-100 text-emerald-900"
+            : oc === "login_wall"
+              ? "bg-amber-100 text-amber-950"
+              : "bg-slate-100 text-slate-800";
         tr.innerHTML = `
           <td class="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-600">${escapeHtml(r.id)}</td>
           <td class="whitespace-nowrap px-4 py-2 font-semibold">${escapeHtml(r.state)}</td>
           <td class="px-4 py-2">${r.success ? '<span class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">pass</span>'
             : '<span class="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800">fail</span>'}</td>
           <td class="whitespace-nowrap px-4 py-2 font-mono text-xs">${escapeHtml(Math.round(r.duration_ms ?? 0))}</td>
-          <td class="max-w-[14rem] truncate px-4 py-2 text-slate-800" title="${escapeHtml(r.neighborhood_name || "")}">${escapeHtml(r.neighborhood_name || "—")}</td>
-          <td class="max-w-[18rem] truncate px-4 py-2 text-slate-700" title="${escapeHtml(r.address)}">${escapeHtml(r.address)}</td>
-          <td class="max-w-[16rem] truncate px-4 py-2 text-xs text-rose-700" title="${escapeHtml(r.error_message || "")}">${escapeHtml((r.error_message || "").slice(0, 120))}</td>`;
+          <td class="max-w-[12rem] truncate px-4 py-2 text-slate-800" title="${escapeHtml(r.neighborhood_name || "")}">${escapeHtml(r.neighborhood_name || "—")}</td>
+          <td class="whitespace-nowrap px-4 py-2"><span class="rounded-full px-2 py-0.5 text-xs font-medium ${ocClass}">${escapeHtml(oc)}</span></td>
+          <td class="max-w-[18rem] px-4 py-2 text-xs text-slate-700" title="${escapeHtml(r.diagnosis || "")}">${escapeHtml((r.diagnosis || "—").slice(0, 140))}</td>
+          <td class="max-w-[14rem] truncate px-4 py-2 text-slate-700" title="${escapeHtml(r.address)}">${escapeHtml(r.address)}</td>
+          <td class="max-w-[14rem] truncate px-4 py-2 text-xs text-rose-700" title="${escapeHtml(r.error_message || "")}">${escapeHtml((r.error_message || "").slice(0, 100))}</td>`;
         tr.addEventListener("click", () => openModal(r));
         frag.appendChild(tr);
       }
@@ -477,12 +544,22 @@
       $("#modalTitle").textContent = `Run #${r.id} · ${r.success ? "Success" : "Failure"}`;
       $("#d_state").textContent = r.state ?? "—";
       $("#d_dur").textContent = `${Math.round(r.duration_ms ?? 0)} ms`;
+      $("#d_outcome").textContent = r.outcome_code || "—";
+      $("#d_diagnosis").textContent = r.diagnosis || "—";
+      $("#d_url").textContent = r.page_url || "—";
+      $("#d_iframe").textContent =
+        r.used_iframe === true
+          ? "yes (selectors scoped to iframe)"
+          : r.used_iframe === false
+            ? "no (top-level page)"
+            : "— (legacy result; re-run the test suite)";
       $("#d_addr").textContent = r.address ?? "—";
       $("#d_hood").textContent = r.neighborhood_name ?? "—";
       $("#d_shot").textContent = r.screenshot_path ?? "—";
       $("#d_err").textContent = r.error_message ?? "—";
       $("#d_metrics").textContent = JSON.stringify(r.metrics || {}, null, 2);
       $("#d_raw").textContent = r.extracted_raw || "—";
+      $("#d_evidence").textContent = JSON.stringify(r.evidence || {}, null, 2);
     }
     function closeModal() {
       $("#modal").classList.add("hidden");
@@ -495,6 +572,10 @@
         "state",
         "success",
         "duration_ms",
+        "outcome_code",
+        "diagnosis",
+        "page_url",
+        "used_iframe",
         "neighborhood_name",
         "address",
         "error_message",
