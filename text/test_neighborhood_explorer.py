@@ -79,7 +79,9 @@ from faker import Faker
 from random_address import real_random_address, real_random_address_by_state
 from tqdm import tqdm
 
-from playwright.sync_api import FrameLocator, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import FrameLocator, Locator, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+
+ExplorerCtx = Union[Page, FrameLocator, Locator]
 
 # ---------------------------------------------------------------------------
 # Tunable selectors & timing — update after running Playwright codegen
@@ -89,17 +91,22 @@ STAGING_URL = (
 )
 LOGIN_URL = "https://staging.dreamneighborhood.com/accounts/login/"
 
-# Set to None (or "") to use the top-level page; else first matching iframe hosts the widget.
-IFRAME_SELECTOR: Optional[str] = "iframe"
+# Set to None to use the top-level page (Dream Neighborhood hosts the map search in <main>,
+# not in an iframe — a stray first <iframe> on the page caused address fills to time out).
+IFRAME_SELECTOR: Optional[str] = None
+# When not using an iframe, scope locators to app content (avoids unrelated header/footer inputs).
+WIDGET_HOST_SELECTOR: Optional[str] = "main"
 
-# Locators are resolved against either Page or FrameLocator.
+# Locators are resolved against Page, FrameLocator, or a scoped Locator (e.g. <main>).
 ADDRESS_INPUT_SELECTOR = (
     'input[placeholder*="address" i], input[placeholder*="search" i], '
-    'input[type="search"], input[name="address"], input[name="q"], textarea'
+    'input[type="search"], input[name="address"], input[name="q"], '
+    'input[aria-label*="address" i], input[aria-label*="search" i], textarea'
 )
 SUBMIT_BUTTON_SELECTOR = (
     'button[type="submit"], button:has-text("Search"), button:has-text("Explore"), '
-    'button:has-text("Go"), [role="button"]:has-text("Search")'
+    'button:has-text("Go"), button:has-text("View Neighborhood Data"), '
+    '[role="button"]:has-text("Search"), [role="button"]:has-text("View Neighborhood Data")'
 )
 CLEAR_BUTTON_SELECTOR = 'button:has-text("Clear"), button[aria-label*="clear" i]'
 
@@ -306,19 +313,31 @@ def _maybe_login(page: Page) -> None:
     page.wait_for_load_state("networkidle", timeout=NAVIGATION_TIMEOUT_MS)
 
 
-def _get_context(page: Page) -> tuple[Union[Page, FrameLocator], bool]:
-    if not IFRAME_SELECTOR:
-        return page, False
+def _widget_host(page: Page) -> ExplorerCtx:
+    """Prefer <main> for explorer controls; fall back to full page if layout differs."""
+    if not WIDGET_HOST_SELECTOR:
+        return page
+    host = page.locator(WIDGET_HOST_SELECTOR).first
     try:
-        page.wait_for_selector(IFRAME_SELECTOR, timeout=12_000)
+        host.wait_for(state="visible", timeout=12_000)
+        return host
     except PlaywrightTimeoutError:
-        return page, False
-    if page.locator(IFRAME_SELECTOR).count() < 1:
-        return page, False
-    return page.frame_locator(IFRAME_SELECTOR), True
+        return page
 
 
-def _locate(ctx: Union[Page, FrameLocator], selector: str):
+def _get_context(page: Page) -> tuple[ExplorerCtx, bool]:
+    if IFRAME_SELECTOR:
+        try:
+            page.wait_for_selector(IFRAME_SELECTOR, timeout=12_000)
+        except PlaywrightTimeoutError:
+            return _widget_host(page), False
+        if page.locator(IFRAME_SELECTOR).count() < 1:
+            return _widget_host(page), False
+        return page.frame_locator(IFRAME_SELECTOR), True
+    return _widget_host(page), False
+
+
+def _locate(ctx: ExplorerCtx, selector: str):
     return ctx.locator(selector).first
 
 
@@ -331,12 +350,12 @@ def _safe_inner_text(locator) -> str:
         return ""
 
 
-def _extract_neighborhood_name(ctx: Union[Page, FrameLocator]) -> Optional[str]:
+def _extract_neighborhood_name(ctx: ExplorerCtx) -> Optional[str]:
     txt = _safe_inner_text(ctx.locator(NEIGHBORHOOD_NAME_SELECTOR).first)
     return txt or None
 
 
-def _extract_metrics(ctx: Union[Page, FrameLocator]) -> Dict[str, str]:
+def _extract_metrics(ctx: ExplorerCtx) -> Dict[str, str]:
     metrics: Dict[str, str] = {}
     try:
         loc = ctx.locator(METRIC_ROW_SELECTOR)
@@ -351,7 +370,7 @@ def _extract_metrics(ctx: Union[Page, FrameLocator]) -> Dict[str, str]:
     return metrics
 
 
-def _extract_error(ctx: Union[Page, FrameLocator]) -> Optional[str]:
+def _extract_error(ctx: ExplorerCtx) -> Optional[str]:
     err = _safe_inner_text(ctx.locator(ERROR_SELECTOR).first)
     return err or None
 
@@ -364,7 +383,7 @@ def _metrics_non_trivial(metrics: Dict[str, str]) -> bool:
     return False
 
 
-def _wait_for_loading_done(ctx: Union[Page, FrameLocator], page: Page, overall_deadline: float) -> None:
+def _wait_for_loading_done(ctx: ExplorerCtx, page: Page, overall_deadline: float) -> None:
     if not LOADING_SELECTOR:
         return
     loader = ctx.locator(LOADING_SELECTOR).first
@@ -379,7 +398,7 @@ def _wait_for_loading_done(ctx: Union[Page, FrameLocator], page: Page, overall_d
         pass
 
 
-def _wait_for_explorer_outcome(ctx: Union[Page, FrameLocator], page: Page) -> None:
+def _wait_for_explorer_outcome(ctx: ExplorerCtx, page: Page) -> None:
     """
     Poll until we see an error, a neighborhood title, non-trivial metrics, or time out.
     Does not assume RESULT_READY_SELECTOR is correct — uses observable text/metrics.
@@ -474,7 +493,7 @@ def _build_outcome(
     )
 
 
-def _clear_address_field(ctx: Union[Page, FrameLocator]) -> None:
+def _clear_address_field(ctx: ExplorerCtx) -> None:
     try:
         inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
         inp.click(timeout=3_000)
@@ -489,7 +508,7 @@ def _clear_address_field(ctx: Union[Page, FrameLocator]) -> None:
 
 def _submit_and_collect(
     page: Page,
-    ctx: Union[Page, FrameLocator],
+    ctx: ExplorerCtx,
     address: str,
     artifacts_dir: Path,
     case_id: int,
