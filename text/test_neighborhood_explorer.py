@@ -64,6 +64,7 @@ import argparse
 import json
 import os
 import random
+import re
 import shutil
 import sys
 import threading
@@ -98,11 +99,22 @@ IFRAME_SELECTOR: Optional[str] = None
 WIDGET_HOST_SELECTOR: Optional[str] = "main"
 
 # Locators are resolved against Page, FrameLocator, or a scoped Locator (e.g. <main>).
+# Google Places Autocomplete adds .pac-target-input; Dream Neighborhood labels the map search
+# "Current location" (often without placeholder=address).
 ADDRESS_INPUT_SELECTOR = (
+    "input.pac-target-input, "
+    'input[aria-label*="current location" i], input[placeholder*="location" i], '
     'input[placeholder*="address" i], input[placeholder*="search" i], '
     'input[type="search"], input[name="address"], input[name="q"], '
     'input[aria-label*="address" i], input[aria-label*="search" i], textarea'
 )
+PLACES_SUGGESTION_FALLBACK_SELECTORS: List[str] = [
+    ".pac-container .pac-item",
+    '[role="listbox"] [role="option"]',
+    "div.pac-item",
+]
+# Keystrokes trigger Google's debounced fetch better than fill() alone.
+ADDRESS_TYPE_DELAY_MS = 35
 SUBMIT_BUTTON_SELECTOR = (
     'button[type="submit"], button:has-text("Search"), button:has-text("Explore"), '
     'button:has-text("Go"), button:has-text("View Neighborhood Data"), '
@@ -121,16 +133,20 @@ ERROR_SELECTOR = '[class*="error" i], [class*="alert" i], [role="alert"], .text-
 LOADING_SELECTOR = '[class*="loading" i], [class*="spinner" i], [aria-busy="true"], [data-loading="true"]'
 
 NAVIGATION_TIMEOUT_MS = 60_000
-ACTION_TIMEOUT_MS = 25_000
-RESULT_TIMEOUT_MS = 60_000
-RETRIES_PER_ADDRESS = 3
-RETRY_BASE_SLEEP_SEC = 0.75
-POST_SUBMIT_STABILITY_MS = 400
+# Login form can be slow; keep this separate from fast explorer interactions.
+LOGIN_ACTION_TIMEOUT_MS = 25_000
+# Explorer: fail fast when selectors/autocomplete are wrong (user preference ~3s per action).
+ACTION_TIMEOUT_MS = 3_000
+# After "View Neighborhood Data", allow a short window for the panel to populate.
+RESULT_TIMEOUT_MS = 5_000
+RETRIES_PER_ADDRESS = 1
+RETRY_BASE_SLEEP_SEC = 0.25
+POST_SUBMIT_STABILITY_MS = 250
 # Minimum time after click before we start polling (lets the UI request start).
-MIN_POST_SUBMIT_WAIT_MS = 350
-RESULT_SETTLE_POLL_MS = 250
+MIN_POST_SUBMIT_WAIT_MS = 250
+RESULT_SETTLE_POLL_MS = 200
 # After success/error is detected, brief pause so late-bound text/metrics can render.
-STABILIZE_AFTER_OUTCOME_MS = 900
+STABILIZE_AFTER_OUTCOME_MS = 400
 
 # US state codes (50 states). ~count/20 per state when count=1000.
 ALL_US_STATE_CODES: List[str] = [
@@ -303,13 +319,13 @@ def _maybe_login(page: Page) -> None:
         return
     page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
     form = _login_form(page).first
-    form.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+    form.wait_for(state="visible", timeout=LOGIN_ACTION_TIMEOUT_MS)
     # Django allauth — prefer id_login / name=login (not a generic type=email elsewhere on page).
-    form.locator('input#id_login, input[name="login"]').first.fill(email, timeout=ACTION_TIMEOUT_MS)
+    form.locator('input#id_login, input[name="login"]').first.fill(email, timeout=LOGIN_ACTION_TIMEOUT_MS)
     form.locator('input#id_password, input[name="password"]').first.fill(
-        password, timeout=ACTION_TIMEOUT_MS
+        password, timeout=LOGIN_ACTION_TIMEOUT_MS
     )
-    form.locator('button[type="submit"], input[type="submit"]').first.click(timeout=ACTION_TIMEOUT_MS)
+    form.locator('button[type="submit"], input[type="submit"]').first.click(timeout=LOGIN_ACTION_TIMEOUT_MS)
     page.wait_for_load_state("networkidle", timeout=NAVIGATION_TIMEOUT_MS)
 
 
@@ -339,6 +355,41 @@ def _get_context(page: Page) -> tuple[ExplorerCtx, bool]:
 
 def _locate(ctx: ExplorerCtx, selector: str):
     return ctx.locator(selector).first
+
+
+def _resolve_address_input(ctx: ExplorerCtx):
+    """Visible map search / Google Places input inside the widget host."""
+    try:
+        loc = ctx.locator(ADDRESS_INPUT_SELECTOR).first
+        loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+        return loc
+    except PlaywrightTimeoutError:
+        pass
+    loc = ctx.get_by_label(re.compile(r"current\s+location", re.I)).first
+    loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+    return loc
+
+
+def _select_first_places_suggestion(page: Page) -> bool:
+    """
+    Pick the first Google Places (or ARIA listbox) suggestion.
+    The popover is typically attached under <body>, outside <main>, so use ``page`` here.
+    """
+    for sel in PLACES_SUGGESTION_FALLBACK_SELECTORS:
+        item = page.locator(sel).first
+        try:
+            item.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+            item.click(timeout=ACTION_TIMEOUT_MS)
+            return True
+        except PlaywrightTimeoutError:
+            continue
+    try:
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(120)
+        page.keyboard.press("Enter")
+        return True
+    except Exception:
+        return False
 
 
 def _safe_inner_text(locator) -> str:
@@ -495,13 +546,13 @@ def _build_outcome(
 
 def _clear_address_field(ctx: ExplorerCtx) -> None:
     try:
-        inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
-        inp.click(timeout=3_000)
+        inp = _resolve_address_input(ctx)
+        inp.click(timeout=ACTION_TIMEOUT_MS)
         inp.fill("")
         if CLEAR_BUTTON_SELECTOR:
             btn = ctx.locator(CLEAR_BUTTON_SELECTOR).first
             if btn.count() > 0:
-                btn.click(timeout=2_000)
+                btn.click(timeout=ACTION_TIMEOUT_MS)
     except Exception:
         pass
 
@@ -529,15 +580,22 @@ def _submit_and_collect(
 ]:
     error_msg: Optional[str] = None
     _clear_address_field(ctx)
-    inp = _locate(ctx, ADDRESS_INPUT_SELECTOR)
-    inp.fill(address, timeout=ACTION_TIMEOUT_MS)
+    inp = _resolve_address_input(ctx)
+    inp.click(timeout=ACTION_TIMEOUT_MS)
+    inp.fill("")
+    # Keystrokes + debounce so Places returns suggestions; fill() alone often skips the dropdown.
+    inp.press_sequentially(address, delay=ADDRESS_TYPE_DELAY_MS)
+    page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
+    if not _select_first_places_suggestion(page):
+        error_msg = "autocomplete_no_suggestion_clicked"
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
     try:
         sub = _locate(ctx, SUBMIT_BUTTON_SELECTOR)
         sub.click(timeout=ACTION_TIMEOUT_MS)
     except Exception as exc:
-        error_msg = f"submit_click_failed: {exc}"
+        error_msg = (error_msg + "; ") if error_msg else ""
+        error_msg = f"{error_msg}submit_click_failed: {exc}"
         try:
             inp.press("Enter", timeout=ACTION_TIMEOUT_MS)
         except Exception:
@@ -974,11 +1032,10 @@ def main() -> int:
             "See docs/RUNNING.md.\n"
         )
         if os.environ.get("GITHUB_ACTIONS") == "true":
-            est_min = max(1, int(len(runlist) * 2))
             print(
                 "[!] You are in GitHub Actions WITHOUT login secrets.\n"
-                f"    Expect on the order of ~2 minutes × {len(runlist)} tests ≈ {est_min}+ minutes of wall time.\n"
-                "    Add repo secrets DREAM_NEIGHBORHOOD_EMAIL and DREAM_NEIGHBORHOOD_PASSWORD, or read docs/START-HERE.md.\n"
+                "    Expect mostly login_wall results. Add DREAM_NEIGHBORHOOD_EMAIL and "
+                "DREAM_NEIGHBORHOOD_PASSWORD repo secrets, or read docs/START-HERE.md.\n"
             )
 
     meta_x = _run_meta_extras(had_login_config)
