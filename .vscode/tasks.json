@@ -4,7 +4,7 @@
     {
       "label": "Neighborhood Explorer: prompt for count (show browser)",
       "type": "shell",
-      "command": "python text/test_neighborhood_explorer.py --headed",
+      "command": "python text/test_neighborhood_explorer.py",
       "options": {
         "cwd": "${workspaceFolder}",
         "envFile": "${workspaceFolder}/.env"
@@ -20,7 +20,7 @@
     {
       "label": "Neighborhood Explorer: smoke (2, show browser)",
       "type": "shell",
-      "command": "python text/test_neighborhood_explorer.py --count 2 --headed",
+      "command": "python text/test_neighborhood_explorer.py --count 2",
       "options": {
         "cwd": "${workspaceFolder}",
         "envFile": "${workspaceFolder}/.env"
@@ -52,7 +52,7 @@
     {
       "label": "Neighborhood Explorer: custom count…",
       "type": "shell",
-      "command": "python text/test_neighborhood_explorer.py --count ${input:explorerCount} --headed",
+      "command": "python text/test_neighborhood_explorer.py --count ${input:explorerCount}",
       "options": {
         "cwd": "${workspaceFolder}",
         "envFile": "${workspaceFolder}/.env"
@@ -68,7 +68,7 @@
     {
       "label": "Neighborhood Explorer: live dashboard + smoke",
       "type": "shell",
-      "command": "python text/test_neighborhood_explorer.py --count 2 --headed --live-port 8765",
+      "command": "python text/test_neighborhood_explorer.py --count 2 --live-port 8765",
       "options": {
         "cwd": "${workspaceFolder}",
         "envFile": "${workspaceFolder}/.env"

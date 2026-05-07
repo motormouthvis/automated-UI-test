@@ -2,13 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Explorer: smoke (2, headed)",
+      "name": "Neighborhood Explorer",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "args": ["--count", "2", "--headed"],
+      "args": ["--count", "2"],
       "console": "integratedTerminal",
       "justMyCode": true
     },
@@ -30,7 +30,7 @@
       "program": "${workspaceFolder}/text/test_neighborhood_explorer.py",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "args": ["--count", "1", "--headed"],
+      "args": ["--count", "1"],
       "console": "integratedTerminal",
       "justMyCode": true
     }

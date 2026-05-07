@@ -885,7 +885,14 @@ def parse_args() -> argparse.Namespace:
             f"Non-interactive stdin defaults to {DEFAULT_ADDRESS_COUNT}."
         ),
     )
-    p.add_argument("--headless", type=_str2bool, default=True, nargs="?", const=True, help="true|false (default: true)")
+    p.add_argument(
+        "--headless",
+        type=_str2bool,
+        default=False,
+        nargs="?",
+        const=True,
+        help="true|false (default: false — browser visible; CI passes --headless true)",
+    )
     p.add_argument("--output", type=str, default=str(_REPO_ROOT / "results.json"))
     p.add_argument("--delay", type=float, default=0.0, help="Seconds to sleep between tests")
     p.add_argument("--headed", action="store_true", help="Run headed (shows the browser). Overrides --headless.")
