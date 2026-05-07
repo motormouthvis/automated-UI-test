@@ -80,9 +80,9 @@ from faker import Faker
 from random_address import real_random_address, real_random_address_by_state
 from tqdm import tqdm
 
-from playwright.sync_api import FrameLocator, Locator, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import Frame, FrameLocator, Locator, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-ExplorerCtx = Union[Page, FrameLocator, Locator]
+ExplorerCtx = Union[Page, Frame, FrameLocator, Locator]
 
 # ---------------------------------------------------------------------------
 # Tunable selectors & timing — update after running Playwright codegen
@@ -92,11 +92,13 @@ STAGING_URL = (
 )
 LOGIN_URL = "https://staging.dreamneighborhood.com/accounts/login/"
 
-# Set to None to use the top-level page (Dream Neighborhood hosts the map search in <main>,
-# not in an iframe — a stray first <iframe> on the page caused address fills to time out).
+# Optional explicit iframe CSS (e.g. "iframe#widget"). If None, the runner scans child frames for the map
+# search / Places input (…/explore-neighborhoods embeds the control in a frame, not in <main> DOM).
 IFRAME_SELECTOR: Optional[str] = None
-# When not using an iframe, scope locators to app content (avoids unrelated header/footer inputs).
+# When not using an iframe, scope "read" locators to app content (right-hand panel). Interaction may still use a child frame.
 WIDGET_HOST_SELECTOR: Optional[str] = "main"
+# Time to wait for the embedded explorer frame to attach and render the search input.
+EXPLORER_IFRAME_PROBE_MS = 15_000
 
 # Locators are resolved against Page, FrameLocator, or a scoped Locator (e.g. <main>).
 # Google Places Autocomplete adds .pac-target-input; Dream Neighborhood labels the map search
@@ -337,7 +339,7 @@ def _maybe_login(page: Page) -> None:
 
 
 def _widget_host(page: Page) -> ExplorerCtx:
-    """Prefer <main> for explorer controls; fall back to full page if layout differs."""
+    """Prefer <main> for dashboard / right-hand panel reads."""
     if not WIDGET_HOST_SELECTOR:
         return page
     host = page.locator(WIDGET_HOST_SELECTOR).first
@@ -348,16 +350,47 @@ def _widget_host(page: Page) -> ExplorerCtx:
         return page
 
 
-def _get_context(page: Page) -> tuple[ExplorerCtx, bool]:
+def _frame_with_explorer_input(page: Page) -> Optional[Frame]:
+    """
+    Find a *child* frame whose document contains the Google Places / map search field.
+    The visible "Current location …" control on explore-neighborhoods is not in <main>.
+    """
+    deadline = time.monotonic() + EXPLORER_IFRAME_PROBE_MS / 1000.0
+    while time.monotonic() < deadline:
+        for frame in list(page.frames):
+            if frame == page.main_frame:
+                continue
+            loc = frame.locator(ADDRESS_INPUT_SELECTOR).first
+            try:
+                loc.wait_for(state="visible", timeout=500)
+                return frame
+            except PlaywrightTimeoutError:
+                continue
+            except Exception:
+                continue
+        page.wait_for_timeout(250)
+    return None
+
+
+def _explorer_surfaces(page: Page) -> tuple[ExplorerCtx, ExplorerCtx, bool]:
+    """
+    Return (interaction_context, read_context, used_iframe).
+
+    Typing, Places pick, and map CTA usually run inside an embedded frame; titles/metrics
+    may render in the parent app (main).
+    """
+    read = _widget_host(page)
     if IFRAME_SELECTOR:
         try:
-            page.wait_for_selector(IFRAME_SELECTOR, timeout=12_000)
+            page.wait_for_selector(IFRAME_SELECTOR, timeout=min(EXPLORER_IFRAME_PROBE_MS, 12_000))
         except PlaywrightTimeoutError:
-            return _widget_host(page), False
-        if page.locator(IFRAME_SELECTOR).count() < 1:
-            return _widget_host(page), False
-        return page.frame_locator(IFRAME_SELECTOR), True
-    return _widget_host(page), False
+            pass
+        if page.locator(IFRAME_SELECTOR).count() >= 1:
+            return page.frame_locator(IFRAME_SELECTOR), read, True
+    frame = _frame_with_explorer_input(page)
+    if frame is not None:
+        return frame, read, True
+    return read, read, False
 
 
 def _locate(ctx: ExplorerCtx, selector: str):
@@ -377,19 +410,23 @@ def _resolve_address_input(ctx: ExplorerCtx):
     return loc
 
 
-def _select_first_places_suggestion(page: Page) -> bool:
+def _select_first_places_suggestion(page: Page, interact_ctx: ExplorerCtx) -> bool:
     """
     Pick the first Google Places (or ARIA listbox) suggestion.
-    The popover is typically attached under <body>, outside <main>, so use ``page`` here.
+    Prefer the same document as the search input (often the embed frame); fall back to top page.
     """
-    for sel in PLACES_SUGGESTION_FALLBACK_SELECTORS:
-        item = page.locator(sel).first
-        try:
-            item.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
-            item.click(timeout=ACTION_TIMEOUT_MS)
-            return True
-        except PlaywrightTimeoutError:
-            continue
+    roots: List[ExplorerCtx] = [interact_ctx]
+    if not isinstance(interact_ctx, Page):
+        roots.append(page)
+    for root in roots:
+        for sel in PLACES_SUGGESTION_FALLBACK_SELECTORS:
+            item = root.locator(sel).first
+            try:
+                item.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+                item.click(timeout=ACTION_TIMEOUT_MS)
+                return True
+            except PlaywrightTimeoutError:
+                continue
     try:
         page.keyboard.press("ArrowDown")
         page.wait_for_timeout(120)
@@ -566,7 +603,8 @@ def _clear_address_field(ctx: ExplorerCtx) -> None:
 
 def _submit_and_collect(
     page: Page,
-    ctx: ExplorerCtx,
+    interact_ctx: ExplorerCtx,
+    read_ctx: ExplorerCtx,
     address: str,
     artifacts_dir: Path,
     case_id: int,
@@ -586,19 +624,19 @@ def _submit_and_collect(
     Dict[str, Any],
 ]:
     error_msg: Optional[str] = None
-    _clear_address_field(ctx)
-    inp = _resolve_address_input(ctx)
+    _clear_address_field(interact_ctx)
+    inp = _resolve_address_input(interact_ctx)
     inp.click(timeout=ACTION_TIMEOUT_MS)
     inp.fill("")
     # Keystrokes + debounce so Places returns suggestions; fill() alone often skips the dropdown.
     inp.press_sequentially(address, delay=ADDRESS_TYPE_DELAY_MS)
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
-    if not _select_first_places_suggestion(page):
+    if not _select_first_places_suggestion(page, interact_ctx):
         error_msg = "autocomplete_no_suggestion_clicked"
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
     try:
-        sub = _locate(ctx, SUBMIT_BUTTON_SELECTOR)
+        sub = _locate(interact_ctx, SUBMIT_BUTTON_SELECTOR)
         sub.click(timeout=ACTION_TIMEOUT_MS)
     except Exception as exc:
         error_msg = (error_msg + "; ") if error_msg else ""
@@ -610,14 +648,14 @@ def _submit_and_collect(
 
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
-    _wait_for_explorer_outcome(ctx, page)
+    _wait_for_explorer_outcome(read_ctx, page)
 
-    err = _extract_error(ctx)
-    name = _extract_neighborhood_name(ctx)
-    metrics = _extract_metrics(ctx)
+    err = _extract_error(read_ctx)
+    name = _extract_neighborhood_name(read_ctx)
+    metrics = _extract_metrics(read_ctx)
     raw_blob = ""
     try:
-        raw_blob = _safe_inner_text(ctx.locator("body").first)
+        raw_blob = _safe_inner_text(read_ctx.locator("body").first)
     except Exception:
         try:
             raw_blob = _safe_inner_text(page.locator("body").first)
@@ -679,7 +717,7 @@ def run_one(
     for attempt in range(1, RETRIES_PER_ADDRESS + 1):
         try:
             page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-            ctx, used_iframe = _get_context(page)
+            interact_ctx, read_ctx, used_iframe = _explorer_surfaces(page)
             (
                 ok,
                 name,
@@ -694,7 +732,8 @@ def run_one(
                 evidence,
             ) = _submit_and_collect(
                 page,
-                ctx,
+                interact_ctx,
+                read_ctx,
                 address,
                 artifacts_dir,
                 case_id,
