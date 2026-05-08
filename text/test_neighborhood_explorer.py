@@ -49,6 +49,9 @@ USAGE EXAMPLES
 ================================================================================
   python text/test_neighborhood_explorer.py --headed
 
+  Less chatty local logs (one line per address; full detail still in results JSON):
+  python text/test_neighborhood_explorer.py --headed -q
+
   If you omit --count, you are prompted in the terminal (1-1000). CI/GitHub must pass --count.
   python text/test_neighborhood_explorer.py --count 1000 --output my_results.json --delay 0.5
 
@@ -1888,7 +1891,14 @@ def start_dashboard_server(dashboard_dir: Path, port: int) -> ThreadingHTTPServe
     return server
 
 
-def summarize_and_print(meta: Dict[str, Any]) -> None:
+def summarize_and_print(meta: Dict[str, Any], *, quiet: bool = False) -> None:
+    if quiet:
+        print(
+            f"\nSummary: {meta['success_count']}/{meta['total_tests']} passed "
+            f"({meta['success_rate']}%), failures {meta['failure_count']}, "
+            f"avg {meta['avg_duration_ms']} ms, {meta['states_covered']} states\n"
+        )
+        return
     print("\n" + "=" * 72)
     print("SUMMARY")
     print("=" * 72)
@@ -1915,7 +1925,28 @@ def _prompt_address_count() -> int:
             print(f"  {e}")
 
 
-def _report_address_result(case_id: int, state: str, address: str, row: TestRow) -> str:
+def _report_address_result(
+    case_id: int,
+    state: str,
+    address: str,
+    row: TestRow,
+    *,
+    quiet: bool = False,
+) -> str:
+    if quiet:
+        mark = "ok" if row.success else "FAIL"
+        tail = ""
+        if not row.success and row.error_message:
+            em = row.error_message.replace("\n", " ")
+            if len(em) > 120:
+                em = em[:117] + "…"
+            tail = f"  |  {em}"
+        if row.screenshot_path:
+            tail += f"  |  shot: {row.screenshot_path}"
+        return (
+            f"  #{case_id} {state} {mark}  {row.duration_ms} ms  "
+            f"|  {address}{tail}"
+        )
     lines = [
         "",
         "=" * 72,
@@ -2009,6 +2040,12 @@ def parse_args() -> argparse.Namespace:
         metavar="PORT",
         help="Serve dashboard/ on 127.0.0.1:PORT and refresh live_state.json after each test. Open /?live=1",
     )
+    p.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Concise terminal output (one line per address, short summary). Full detail stays in results JSON.",
+    )
     args = p.parse_args()
     if args.headed:
         args.headless = False
@@ -2039,12 +2076,15 @@ def main() -> int:
         and os.environ.get("DREAM_NEIGHBORHOOD_PASSWORD", "").strip()
     )
     if not had_login_config:
-        print(
-            "\n[!] DREAM_NEIGHBORHOOD_EMAIL / DREAM_NEIGHBORHOOD_PASSWORD not both set — "
-            "staging may return a sign-in page (reported as outcome_code=login_wall). "
-            "See docs/RUNNING.md.\n"
-        )
-        if os.environ.get("GITHUB_ACTIONS") == "true":
+        if args.quiet:
+            print("[!] No DREAM_NEIGHBORHOOD_* credentials — may hit login wall.\n")
+        else:
+            print(
+                "\n[!] DREAM_NEIGHBORHOOD_EMAIL / DREAM_NEIGHBORHOOD_PASSWORD not both set — "
+                "staging may return a sign-in page (reported as outcome_code=login_wall). "
+                "See docs/RUNNING.md.\n"
+            )
+        if os.environ.get("GITHUB_ACTIONS") == "true" and not args.quiet:
             print(
                 "[!] You are in GitHub Actions WITHOUT login secrets.\n"
                 "    Expect mostly login_wall results. Add DREAM_NEIGHBORHOOD_EMAIL and "
@@ -2083,7 +2123,7 @@ def main() -> int:
             )
 
         for i, (state, address, src) in enumerate(
-            tqdm(runlist, desc="Neighborhood tests", unit="addr"),
+            tqdm(runlist, desc="Neighborhood tests", unit="addr", disable=args.quiet),
             start=1,
         ):
             if args.live_port is not None and args.live_port > 0:
@@ -2109,7 +2149,7 @@ def main() -> int:
             navigate=not (i == 1 and had_login_config),
             )
             rows.append(row)
-            tqdm.write(_report_address_result(i, state, address, row))
+            tqdm.write(_report_address_result(i, state, address, row, quiet=args.quiet))
             sys.stdout.flush()
             sys.stderr.flush()
             if args.live_port is not None and args.live_port > 0:
@@ -2142,25 +2182,30 @@ def main() -> int:
         )
 
     meta = write_outputs(rows, STAGING_URL, out_path, login_env_configured=had_login_config)["meta"]
-    summarize_and_print(meta)
+    summarize_and_print(meta, quiet=args.quiet)
 
     dash_json = dashboard_dir / "results.json"
     shutil.copyfile(out_path, dash_json)
 
-    print("\nTesting complete.\n")
-    print(f"   Wrote machine JSON: {out_path}")
-    print(f"   Dashboard data:     {dash_json}")
-    if args.live_port is not None and args.live_port > 0:
-        print(f"   Live snapshot:      {live_path} (final)")
-        print("   The local server has exited; reopen live mode on the next run with --live-port.\n")
-    print()
-    print("Dashboard ready at: dashboard/index.html")
-    print()
-    print("To deploy to Netlify:")
-    print("  1. Drag the entire 'dashboard' folder to https://app.netlify.com/drop")
-    print("     or")
-    print("  2. Push the repo to GitHub and connect the 'dashboard' directory in Netlify")
-    print()
+    if args.quiet:
+        print(f"Wrote {out_path}  ·  dashboard: {dashboard_dir / 'index.html'}")
+        if args.live_port is not None and args.live_port > 0:
+            print(f"Live snapshot: {live_path}")
+    else:
+        print("\nTesting complete.\n")
+        print(f"   Wrote machine JSON: {out_path}")
+        print(f"   Dashboard data:     {dash_json}")
+        if args.live_port is not None and args.live_port > 0:
+            print(f"   Live snapshot:      {live_path} (final)")
+            print("   The local server has exited; reopen live mode on the next run with --live-port.\n")
+        print()
+        print("Dashboard ready at: dashboard/index.html")
+        print()
+        print("To deploy to Netlify:")
+        print("  1. Drag the entire 'dashboard' folder to https://app.netlify.com/drop")
+        print("     or")
+        print("  2. Push the repo to GitHub and connect the 'dashboard' directory in Netlify")
+        print()
     return 0
 
 
