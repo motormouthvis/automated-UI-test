@@ -9,8 +9,8 @@ Flow per address:
   1. Ensure **Map and Summary** is active.
   2. Enter the address (Places), choose a suggestion, click **View Neighborhood Data**.
   3. Assert the **summary panel** shows the expected headings (e.g. “Summary for selected area”,
-     “About the data”, Household Income, Median Home Price, Median Rent, occupancy, education,
-     employment) with **numeric values in normal ranges** (see CONFIG).
+     “About the data”, Household Income, Median Home Price, **Median Rent or Median Age** (product
+     varies by area), occupancy, education, employment) with **numeric values in normal ranges** (see CONFIG).
   4. Confirm the panel still reflects the entered place (token alignment on the title line).
 
 ================================================================================
@@ -177,23 +177,28 @@ ERROR_SELECTOR = '[class*="error" i], [class*="alert" i], [role="alert"], .text-
 LOADING_SELECTOR = '[class*="loading" i], [class*="spinner" i], [aria-busy="true"], [data-loading="true"]'
 
 # ---- Map + Summary panel (right of map): required copy and sanity ranges ----
+# Widget ``innerText`` often interleaves **value then label** (e.g. ``$412,000`` on the line
+# before ``Median Home Price``). Money helpers must scan *before* the label as well as after.
 SUMMARY_REQUIRED_PHRASES: Tuple[str, ...] = (
     "summary for selected area",
     "about the data",
     "household income",
     "median home price",
-    "median rent",
     "occupied by owners",
     "has college degree",
     "finished high school",
     "employed",
 )
+# Some areas show **Median Age** instead of **Median Rent** in the summary stack.
+SUMMARY_RENT_OR_AGE_PHRASES: Tuple[str, ...] = ("median rent", "median age")
 SUMMARY_INCOME_MIN = 5_000
 SUMMARY_INCOME_MAX = 3_000_000
 SUMMARY_HOME_PRICE_MIN = 10_000
 SUMMARY_HOME_PRICE_MAX = 80_000_000
 SUMMARY_RENT_MIN = 50
 SUMMARY_RENT_MAX = 25_000
+SUMMARY_MEDIAN_AGE_MIN = 1
+SUMMARY_MEDIAN_AGE_MAX = 120
 SUMMARY_PCT_MIN = 0
 SUMMARY_PCT_MAX = 100
 
@@ -914,9 +919,7 @@ def _slice_after_phrase(text: str, phrase: str, *, max_after: int = 320) -> str:
     """
     Text *after* the first case-insensitive occurrence of ``phrase``.
 
-    Used for KPI parsing: including characters *before* the label made
-    ``_first_money_in_chunk`` pick an earlier dollar amount (e.g. median home
-    price) while validating median rent.
+    Used when slicing after a label alone is not enough (e.g. ``_dollar_near_label``).
     """
     if not text or not phrase:
         return ""
@@ -928,6 +931,74 @@ def _slice_after_phrase(text: str, phrase: str, *, max_after: int = 320) -> str:
     start = i + len(p)
     end = min(len(text), start + max_after)
     return text[start:end]
+
+
+def _first_dollar_in_chunk(chunk: str) -> Optional[int]:
+    if not chunk or re.search(r"not\s+available", chunk, re.I):
+        return None
+    m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", chunk)
+    if not m:
+        return None
+    raw = m.group(1).replace(",", "")
+    try:
+        return int(round(float(raw)))
+    except ValueError:
+        return None
+
+
+def _last_dollar_in_chunk(chunk: str) -> Optional[int]:
+    if not chunk or re.search(r"not\s+available", chunk, re.I):
+        return None
+    last: Optional[int] = None
+    for m in re.finditer(r"\$\s*([\d,]+(?:\.\d+)?)", chunk):
+        raw = m.group(1).replace(",", "")
+        try:
+            last = int(round(float(raw)))
+        except ValueError:
+            continue
+    return last
+
+
+def _dollar_near_label(
+    raw: str,
+    label: str,
+    *,
+    before: int = 200,
+    after: int = 120,
+) -> Optional[int]:
+    """
+    Money associated with a KPI label. The widget often emits the dollar line *above* the label.
+    """
+    low = raw.lower()
+    lab = label.lower()
+    i = low.find(lab)
+    if i < 0:
+        return None
+    before_s = raw[max(0, i - before) : i]
+    after_s = raw[i + len(lab) : i + len(lab) + after]
+    v = _last_dollar_in_chunk(before_s)
+    if v is not None:
+        return v
+    return _first_dollar_in_chunk(after_s)
+
+
+def _median_age_near_label(raw: str) -> Optional[float]:
+    low = raw.lower()
+    i = low.find("median age")
+    if i < 0:
+        return None
+    before_s = raw[max(0, i - 120) : i]
+    after_s = raw[i + len("median age") : i + len("median age") + 100]
+    for chunk in (after_s, before_s):
+        if re.search(r"not\s+available", chunk, re.I):
+            continue
+        m = re.search(r"(?<![\d.])(\d{1,2}(?:\.\d{1,2})?)(?![\d.])", chunk.strip())
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+    return None
 
 
 def _first_money_in_chunk(chunk: str) -> Optional[int]:
@@ -964,6 +1035,44 @@ def _first_pct_in_chunk(chunk: str) -> Optional[int]:
     return int(m.group(1))
 
 
+def _last_pct_in_chunk(chunk: str) -> Optional[int]:
+    if not chunk:
+        return None
+    if re.search(r"not\s+available", chunk, re.I):
+        return None
+    last: Optional[int] = None
+    for m in re.finditer(r"(\d+)\s*%", chunk):
+        last = int(m.group(1))
+    return last
+
+
+def _pct_near_label(
+    raw: str,
+    label: str,
+    *,
+    before: int = 200,
+    after: int = 120,
+    last_pct_before: bool = False,
+) -> Optional[int]:
+    """Widget often places ``NN%`` immediately *before* ``Occupied by owners`` but *after* degree rows."""
+    low = raw.lower()
+    lab = label.lower()
+    i = low.find(lab)
+    if i < 0:
+        return None
+    before_s = raw[max(0, i - before) : i]
+    after_s = raw[i + len(lab) : i + len(lab) + after]
+    if last_pct_before:
+        v = _last_pct_in_chunk(before_s)
+        if v is not None:
+            return v
+        return _first_pct_in_chunk(after_s)
+    v = _first_pct_in_chunk(after_s)
+    if v is not None:
+        return v
+    return _last_pct_in_chunk(before_s)
+
+
 def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict[str, str]]:
     """
     Validate the right-hand summary KPI block.
@@ -976,50 +1085,66 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
     missing = [p for p in SUMMARY_REQUIRED_PHRASES if p not in low]
     if missing:
         return False, f"summary_missing:{','.join(missing[:6])}", snap
+    if not any(p in low for p in SUMMARY_RENT_OR_AGE_PHRASES):
+        return False, "summary_missing:median rent or median age", snap
 
-    inc = _first_money_in_chunk(_slice_after_phrase(raw, "household income"))
+    inc = _dollar_near_label(raw, "household income")
+    if inc is None:
+        inc = _first_money_in_chunk(_slice_after_phrase(raw, "household income"))
     if inc is None:
         return False, "summary_household_income_not_numeric", snap
     if not (SUMMARY_INCOME_MIN <= inc <= SUMMARY_INCOME_MAX):
         return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
     snap["household_income"] = str(inc)
 
-    home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
+    home = _dollar_near_label(raw, "median home price")
+    if home is None:
+        home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
     if home is None:
         return False, "summary_median_home_price_not_numeric", snap
     if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
         return False, f"summary_median_home_price_out_of_range:{home}", {**snap, "median_home_price": str(home)}
     snap["median_home_price"] = str(home)
 
-    rent = _first_money_in_chunk(_slice_after_phrase(raw, "median rent"))
-    if rent is None:
-        return False, "summary_median_rent_not_numeric", snap
-    if not (SUMMARY_RENT_MIN <= rent <= SUMMARY_RENT_MAX):
-        return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
-    snap["median_rent"] = str(rent)
+    if "median rent" in low:
+        rent = _dollar_near_label(raw, "median rent")
+        if rent is None:
+            rent = _first_money_in_chunk(_slice_after_phrase(raw, "median rent"))
+        if rent is None:
+            return False, "summary_median_rent_not_numeric", snap
+        if not (SUMMARY_RENT_MIN <= rent <= SUMMARY_RENT_MAX):
+            return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
+        snap["median_rent"] = str(rent)
+    else:
+        age_val = _median_age_near_label(raw)
+        if age_val is None:
+            return False, "summary_median_age_not_numeric", snap
+        if not (SUMMARY_MEDIAN_AGE_MIN <= age_val <= SUMMARY_MEDIAN_AGE_MAX):
+            return False, f"summary_median_age_out_of_range:{age_val}", snap
+        snap["median_age"] = str(age_val)
 
-    owners = _first_pct_in_chunk(_slice_after_phrase(raw, "occupied by owners"))
+    owners = _pct_near_label(raw, "occupied by owners", last_pct_before=True)
     if owners is None:
         return False, "summary_occupied_by_owners_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= owners <= SUMMARY_PCT_MAX):
         return False, f"summary_occupied_by_owners_pct_out_of_range:{owners}", snap
     snap["occupied_by_owners_pct"] = str(owners)
 
-    college = _first_pct_in_chunk(_slice_after_phrase(raw, "has college degree"))
+    college = _pct_near_label(raw, "has college degree")
     if college is None:
         return False, "summary_college_degree_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= college <= SUMMARY_PCT_MAX):
         return False, f"summary_college_degree_pct_out_of_range:{college}", snap
     snap["college_degree_pct"] = str(college)
 
-    hs = _first_pct_in_chunk(_slice_after_phrase(raw, "finished high school"))
+    hs = _pct_near_label(raw, "finished high school")
     if hs is None:
         return False, "summary_high_school_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= hs <= SUMMARY_PCT_MAX):
         return False, f"summary_high_school_pct_out_of_range:{hs}", snap
     snap["finished_high_school_pct"] = str(hs)
 
-    emp = _first_pct_in_chunk(_slice_after_phrase(raw, "employed", max_after=300))
+    emp = _pct_near_label(raw, "employed", after=280)
     if emp is None:
         return False, "summary_employed_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= emp <= SUMMARY_PCT_MAX):
