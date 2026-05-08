@@ -961,6 +961,57 @@ def _last_dollar_in_chunk(chunk: str) -> Optional[int]:
     return last
 
 
+def _widget_summary_panel_text(raw: str) -> str:
+    """
+    Limit KPI parsing to the right-hand **Map + Summary** block.
+
+    Full ``body`` ``innerText`` includes nav and marketing; ``household income`` can appear there and
+    interact oddly with **Not available** in unrelated copy.
+    """
+    if not raw:
+        return ""
+    low = raw.lower()
+    key = "summary for selected area"
+    i = low.find(key)
+    if i < 0:
+        return raw
+    chunk = raw[i:]
+    low2 = chunk.lower()
+    for stop in ("explorer id:", "powered by"):
+        j = low2.find(stop)
+        if j > 0:
+            return chunk[:j].rstrip()
+    return chunk
+
+
+def _phantom_not_available_after_label(
+    raw: str,
+    label: str,
+    *,
+    before: int = 200,
+    after: int = 80,
+    prefer_last_label: bool = False,
+    dollar_min: int,
+    dollar_max: int,
+) -> bool:
+    """
+    True when **Not available** appears just *after* ``label`` but the last ``$`` *before* the label
+    is already a plausible KPI value. Widget ``innerText`` often sandwiches a stray NA line between
+    stacked rows (e.g. income value is present; NA belongs visually to the next metric).
+    """
+    low = raw.lower()
+    lab = label.lower()
+    i = low.rfind(lab) if prefer_last_label else low.find(lab)
+    if i < 0:
+        return False
+    before_s = raw[max(0, i - before) : i]
+    after_s = raw[i + len(lab) : i + len(lab) + after]
+    if not re.search(r"not\s+available", after_s, re.I):
+        return False
+    lb = _last_dollar_in_chunk(before_s)
+    return lb is not None and dollar_min <= lb <= dollar_max
+
+
 def _kpi_shows_not_available(
     raw: str,
     label: str,
@@ -1103,30 +1154,41 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
     **Not available** on a required row (or a missing numeric where one is expected) is a failure.
     """
     snap: Dict[str, str] = {}
-    low = (raw or "").lower()
+    blob = _widget_summary_panel_text(raw or "")
+    low = blob.lower()
     missing = [p for p in SUMMARY_REQUIRED_PHRASES if p not in low]
     if missing:
         return False, f"summary_missing:{','.join(missing[:6])}", snap
     if not any(p in low for p in SUMMARY_RENT_OR_AGE_PHRASES):
         return False, "summary_missing:median rent or median age", snap
 
-    if _kpi_shows_not_available(raw, "household income"):
+    if _kpi_shows_not_available(blob, "household income") and not _phantom_not_available_after_label(
+        blob,
+        "household income",
+        dollar_min=SUMMARY_INCOME_MIN,
+        dollar_max=SUMMARY_INCOME_MAX,
+    ):
         return False, "summary_household_income_not_available", snap
 
-    inc = _dollar_near_label(raw, "household income")
+    inc = _dollar_near_label(blob, "household income")
     if inc is None:
-        inc = _first_money_in_chunk(_slice_after_phrase(raw, "household income"))
+        inc = _first_money_in_chunk(_slice_after_phrase(blob, "household income"))
     if inc is None:
         return False, "summary_household_income_not_numeric", snap
     if not (SUMMARY_INCOME_MIN <= inc <= SUMMARY_INCOME_MAX):
         return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
     snap["household_income"] = str(inc)
 
-    if _kpi_shows_not_available(raw, "median home price"):
+    if _kpi_shows_not_available(blob, "median home price") and not _phantom_not_available_after_label(
+        blob,
+        "median home price",
+        dollar_min=SUMMARY_HOME_PRICE_MIN,
+        dollar_max=SUMMARY_HOME_PRICE_MAX,
+    ):
         return False, "summary_median_home_price_not_available", snap
-    home = _dollar_near_label(raw, "median home price")
+    home = _dollar_near_label(blob, "median home price")
     if home is None:
-        home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
+        home = _first_money_in_chunk(_slice_after_phrase(blob, "median home price"))
     if home is None:
         return False, "summary_median_home_price_not_numeric", snap
     if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
@@ -1134,56 +1196,61 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
     snap["median_home_price"] = str(home)
 
     if "median rent" in low:
-        if _kpi_shows_not_available(raw, "median rent"):
+        if _kpi_shows_not_available(blob, "median rent") and not _phantom_not_available_after_label(
+            blob,
+            "median rent",
+            dollar_min=SUMMARY_RENT_MIN,
+            dollar_max=SUMMARY_RENT_MAX,
+        ):
             return False, "summary_median_rent_not_available", snap
-        rent = _dollar_near_label(raw, "median rent")
+        rent = _dollar_near_label(blob, "median rent")
         if rent is None:
-            rent = _first_money_in_chunk(_slice_after_phrase(raw, "median rent"))
+            rent = _first_money_in_chunk(_slice_after_phrase(blob, "median rent"))
         if rent is None:
             return False, "summary_median_rent_not_numeric", snap
         if not (SUMMARY_RENT_MIN <= rent <= SUMMARY_RENT_MAX):
             return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
         snap["median_rent"] = str(rent)
     else:
-        if _kpi_shows_not_available(raw, "median age"):
+        if _kpi_shows_not_available(blob, "median age"):
             return False, "summary_median_age_not_available", snap
-        age_val = _median_age_near_label(raw)
+        age_val = _median_age_near_label(blob)
         if age_val is None:
             return False, "summary_median_age_not_numeric", snap
         if not (SUMMARY_MEDIAN_AGE_MIN <= age_val <= SUMMARY_MEDIAN_AGE_MAX):
             return False, f"summary_median_age_out_of_range:{age_val}", snap
         snap["median_age"] = str(age_val)
 
-    if _kpi_shows_not_available(raw, "occupied by owners"):
+    if _kpi_shows_not_available(blob, "occupied by owners"):
         return False, "summary_occupied_by_owners_not_available", snap
-    owners = _pct_near_label(raw, "occupied by owners", last_pct_before=True)
+    owners = _pct_near_label(blob, "occupied by owners", last_pct_before=True)
     if owners is None:
         return False, "summary_occupied_by_owners_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= owners <= SUMMARY_PCT_MAX):
         return False, f"summary_occupied_by_owners_pct_out_of_range:{owners}", snap
     snap["occupied_by_owners_pct"] = str(owners)
 
-    if _kpi_shows_not_available(raw, "has college degree"):
+    if _kpi_shows_not_available(blob, "has college degree"):
         return False, "summary_college_degree_not_available", snap
-    college = _pct_near_label(raw, "has college degree")
+    college = _pct_near_label(blob, "has college degree")
     if college is None:
         return False, "summary_college_degree_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= college <= SUMMARY_PCT_MAX):
         return False, f"summary_college_degree_pct_out_of_range:{college}", snap
     snap["college_degree_pct"] = str(college)
 
-    if _kpi_shows_not_available(raw, "finished high school"):
+    if _kpi_shows_not_available(blob, "finished high school"):
         return False, "summary_high_school_not_available", snap
-    hs = _pct_near_label(raw, "finished high school")
+    hs = _pct_near_label(blob, "finished high school")
     if hs is None:
         return False, "summary_high_school_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= hs <= SUMMARY_PCT_MAX):
         return False, f"summary_high_school_pct_out_of_range:{hs}", snap
     snap["finished_high_school_pct"] = str(hs)
 
-    if _kpi_shows_not_available(raw, "employed", prefer_last_label=True):
+    if _kpi_shows_not_available(blob, "employed", prefer_last_label=True):
         return False, "summary_employed_not_available", snap
-    emp = _pct_near_label(raw, "employed", after=280)
+    emp = _pct_near_label(blob, "employed", after=280)
     if emp is None:
         return False, "summary_employed_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= emp <= SUMMARY_PCT_MAX):
