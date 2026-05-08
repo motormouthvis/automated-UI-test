@@ -9,8 +9,9 @@ Flow per address:
   1. Ensure **Map and Summary** is active.
   2. Enter the address (Places), choose a suggestion, click **View Neighborhood Data**.
   3. Assert the **summary panel** shows the expected headings (e.g. “Summary for selected area”,
-     “About the data”, Household Income, Median Home Price, **Median Rent or Median Age** (product
-     varies by area), occupancy, education, employment) with **numeric values in normal ranges** (see CONFIG).
+     “About the data”, Household Income, Median Home Price (**or “Not available”** for that metric),
+     **Median Rent or Median Age** (product varies by area), occupancy, education, employment)
+     with **numeric values in normal ranges** where present (see CONFIG).
   4. Confirm the panel still reflects the entered place (token alignment on the title line).
 
 ================================================================================
@@ -959,15 +960,29 @@ def _last_dollar_in_chunk(chunk: str) -> Optional[int]:
     return last
 
 
+def _median_home_price_marked_unavailable(raw: str) -> bool:
+    low = raw.lower()
+    i = low.find("median home price")
+    if i < 0:
+        return False
+    before_s = raw[max(0, i - 200) : i]
+    return bool(re.search(r"not\s+available", before_s, re.I))
+
+
 def _dollar_near_label(
     raw: str,
     label: str,
     *,
     before: int = 200,
     after: int = 120,
+    ignore_trailing_dollar_after_if_na_before: bool = False,
 ) -> Optional[int]:
     """
     Money associated with a KPI label. The widget often emits the dollar line *above* the label.
+
+    When ``ignore_trailing_dollar_after_if_na_before`` is True, do not take the first ``$`` *after*
+    the label if the window *before* the label contains **Not available** — the next dollar is
+    almost always **median rent**, not home price.
     """
     low = raw.lower()
     lab = label.lower()
@@ -979,6 +994,8 @@ def _dollar_near_label(
     v = _last_dollar_in_chunk(before_s)
     if v is not None:
         return v
+    if ignore_trailing_dollar_after_if_na_before and re.search(r"not\s+available", before_s, re.I):
+        return None
     return _first_dollar_in_chunk(after_s)
 
 
@@ -1097,14 +1114,18 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
     snap["household_income"] = str(inc)
 
-    home = _dollar_near_label(raw, "median home price")
-    if home is None:
+    home = _dollar_near_label(raw, "median home price", ignore_trailing_dollar_after_if_na_before=True)
+    if home is None and not _median_home_price_marked_unavailable(raw):
         home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
     if home is None:
-        return False, "summary_median_home_price_not_numeric", snap
-    if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
+        if _median_home_price_marked_unavailable(raw):
+            snap["median_home_price"] = "not_available"
+        else:
+            return False, "summary_median_home_price_not_numeric", snap
+    elif not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
         return False, f"summary_median_home_price_out_of_range:{home}", {**snap, "median_home_price": str(home)}
-    snap["median_home_price"] = str(home)
+    else:
+        snap["median_home_price"] = str(home)
 
     if "median rent" in low:
         rent = _dollar_near_label(raw, "median rent")
