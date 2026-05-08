@@ -2,6 +2,17 @@
 """
 Dream Neighborhood Explorer — staging load test (Playwright, sync API)
 
+This script drives **only** the **Map and Summary** experience (default map tab + right-hand
+summary panel). It does **not** open Demographics, Schools, Commutes, or other tabs.
+
+Flow per address:
+  1. Ensure **Map and Summary** is active.
+  2. Enter the address (Places), choose a suggestion, click **View Neighborhood Data**.
+  3. Assert the **summary panel** shows the expected headings (e.g. “Summary for selected area”,
+     “About the data”, Household Income, Median Home Price, Median Rent, occupancy, education,
+     employment) with **numeric values in normal ranges** (see CONFIG).
+  4. Confirm the panel still reflects the entered place (token alignment on the title line).
+
 ================================================================================
 INSTALLATION
 ================================================================================
@@ -51,11 +62,19 @@ USAGE EXAMPLES
   (Netlify stays static; live mode is only while the Python process runs.)
 
 ================================================================================
+SPEED (multi-address runs)
+================================================================================
+  Explorer navigations use ``wait_until=\"commit\"`` and ``EXPLORER_GOTO_TIMEOUT_MS`` (login still uses
+  ``NAVIGATION_TIMEOUT_MS``). Test 1 skips ``goto`` when credentials already opened the explorer;
+  tests 2…N always ``goto`` so the iframe is not stuck on the prior lookup.
+
+================================================================================
 WAITING FOR RESULTS
 ================================================================================
   After submit, the script waits for an error banner, a non-empty neighborhood
-  title, or meaningful metric rows — polling until RESULT_TIMEOUT_MS. Optional
-  LOADING_SELECTOR lets the runner wait for spinners to finish first.
+  title, or meaningful metric rows — first waiting on the widget heading line when
+  practical, then polling until RESULT_TIMEOUT_MS. Optional LOADING_SELECTOR uses
+  short probes; see ``_wait_for_loading_done``.
 """
 
 from __future__ import annotations
@@ -98,12 +117,21 @@ IFRAME_SELECTOR: Optional[str] = None
 # When not using an iframe, scope "read" locators to app content (right-hand panel). Interaction may still use a child frame.
 WIDGET_HOST_SELECTOR: Optional[str] = "main"
 # Time to wait for the embedded explorer frame to attach and render the search input.
-EXPLORER_IFRAME_PROBE_MS = 15_000
+EXPLORER_IFRAME_PROBE_MS = 8_000
+# Staging loads the explorer in a same-origin iframe: …/widget/?partner=… — map search is ``#location-input``
+# (not Google ``pac-target-input``; ``:visible`` can fail while layout settles — use ``attached`` + force-click).
+EXPLORER_WIDGET_IFRAME_SELECTOR = 'iframe[src*="/widget/"]'
+WIDGET_MAP_SEARCH_INPUT_SELECTOR = "#location-input"
+# ``#location-input`` may report 0×0 rect while still focusable; cap probes — happy path resolves quickly.
+ATTACH_INPUT_TIMEOUT_MS = 8_000
 
 # Locators are resolved against Page, FrameLocator, or a scoped Locator (e.g. <main>).
 # Google Places Autocomplete adds .pac-target-input; Dream Neighborhood labels the map search
 # "Current location" (often without placeholder=address).
 ADDRESS_INPUT_SELECTOR = (
+    "#location-input, "
+    "input#location-input, "
+    'input[placeholder*="Enter a location" i], '
     "input.pac-target-input, "
     'input[aria-label*="current location" i], input[placeholder*="location" i], '
     'input[placeholder*="address" i], input[placeholder*="search" i], '
@@ -113,42 +141,79 @@ ADDRESS_INPUT_SELECTOR = (
 PLACES_SUGGESTION_FALLBACK_SELECTORS: List[str] = [
     ".pac-container .pac-item",
     '[role="listbox"] [role="option"]',
+    '[role="listbox"] li',
     "div.pac-item",
 ]
-# Keystrokes trigger Google's debounced fetch better than fill() alone.
-ADDRESS_TYPE_DELAY_MS = 35
+# Keystrokes trigger Google's debounced fetch; delay=0 is fastest once the map search is revealed.
+ADDRESS_TYPE_DELAY_MS = 0
+# After typing / paste, wait at least this long then poll for Places UI (caps total spinner vs fixed sleep).
+PLACES_MIN_WAIT_MS = 40
+PLACES_MAX_WAIT_MS = 320
 SUBMIT_BUTTON_SELECTOR = (
+    'button:has-text("View Neighborhood Data"), '
+    '[role="button"]:has-text("View Neighborhood Data"), '
     'button[type="submit"], button:has-text("Search"), button:has-text("Explore"), '
-    'button:has-text("Go"), button:has-text("View Neighborhood Data"), '
-    '[role="button"]:has-text("Search"), [role="button"]:has-text("View Neighborhood Data")'
+    'button:has-text("Go"), [role="button"]:has-text("Search")'
 )
+# Full-width CTA can be slow to paint / not \"visible\" to actionability yet.
+SUBMIT_CLICK_TIMEOUT_MS = 5_000
 CLEAR_BUTTON_SELECTOR = 'button:has-text("Clear"), button[aria-label*="clear" i]'
+# Staging shows the seed street in ``#current-location-text`` while ``#location-input`` sits under ``.hidden`` until opened.
+MAP_SEARCH_REVEAL_SELECTORS: Tuple[str, ...] = ("#current-location-text", "#location-content")
 
 RESULT_READY_SELECTOR = (
     '[class*="result" i], [class*="neighborhood" i], [data-testid*="result" i], '
     'main article, [role="article"]'
 )
 NEIGHBORHOOD_NAME_SELECTOR = "h1, h2, h3, [class*='neighborhood' i], [class*='title' i]"
-METRIC_ROW_SELECTOR = '[class*="score" i], [class*="metric" i], li:has-text("/100"), dd, dt'
+# Cards often use “stat”/“insight”/grid cells rather than dd/dt; keep broad enough for the widget panel.
+METRIC_ROW_SELECTOR = (
+    '[class*="score" i], [class*="metric" i], [class*="stat" i], [class*="insight" i], '
+    '[class*="kpi" i], [class*="card" i] p, [class*="card" i] div, '
+    'li:has-text("/100"), dd, dt'
+)
 ERROR_SELECTOR = '[class*="error" i], [class*="alert" i], [role="alert"], .text-danger'
 # If the widget shows a spinner / aria-busy while fetching, tune this (set to "" to disable).
 LOADING_SELECTOR = '[class*="loading" i], [class*="spinner" i], [aria-busy="true"], [data-loading="true"]'
 
+# ---- Map + Summary panel (right of map): required copy and sanity ranges ----
+SUMMARY_REQUIRED_PHRASES: Tuple[str, ...] = (
+    "summary for selected area",
+    "about the data",
+    "household income",
+    "median home price",
+    "median rent",
+    "occupied by owners",
+    "has college degree",
+    "finished high school",
+    "employed",
+)
+SUMMARY_INCOME_MIN = 5_000
+SUMMARY_INCOME_MAX = 3_000_000
+SUMMARY_HOME_PRICE_MIN = 10_000
+SUMMARY_HOME_PRICE_MAX = 80_000_000
+SUMMARY_RENT_MIN = 50
+SUMMARY_RENT_MAX = 25_000
+SUMMARY_PCT_MIN = 0
+SUMMARY_PCT_MAX = 100
+
 NAVIGATION_TIMEOUT_MS = 60_000
+# ``run_one`` only — avoid waiting the full minute on a hung embed when the shell HTML is already up.
+EXPLORER_GOTO_TIMEOUT_MS = 18_000
 # Login form can be slow; keep this separate from fast explorer interactions.
 LOGIN_ACTION_TIMEOUT_MS = 25_000
 # Explorer: fail fast when selectors/autocomplete are wrong (user preference ~3s per action).
-ACTION_TIMEOUT_MS = 3_000
-# After "View Neighborhood Data", allow a short window for the panel to populate.
+ACTION_TIMEOUT_MS = 2_000
+# Panel fetch is usually a few seconds; do not burn wall time on unrelated spinners.
 RESULT_TIMEOUT_MS = 5_000
 RETRIES_PER_ADDRESS = 1
 RETRY_BASE_SLEEP_SEC = 0.25
-POST_SUBMIT_STABILITY_MS = 250
-# Minimum time after click before we start polling (lets the UI request start).
-MIN_POST_SUBMIT_WAIT_MS = 250
-RESULT_SETTLE_POLL_MS = 200
+POST_SUBMIT_STABILITY_MS = 15
+# Short pause after CTA so the request starts — summary copy lives in the /widget/ iframe.
+MIN_POST_SUBMIT_WAIT_MS = 20
+RESULT_SETTLE_POLL_MS = 28
 # After success/error is detected, brief pause so late-bound text/metrics can render.
-STABILIZE_AFTER_OUTCOME_MS = 400
+STABILIZE_AFTER_OUTCOME_MS = 35
 
 # US state codes (50 states). ~count/20 per state when count=1000.
 ALL_US_STATE_CODES: List[str] = [
@@ -335,7 +400,7 @@ def _maybe_login(page: Page) -> None:
     except PlaywrightTimeoutError:
         pass
     # Always open the explorer deep link (embed + map); do not rely on post-login default route.
-    page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+    page.goto(STAGING_URL, wait_until="commit", timeout=NAVIGATION_TIMEOUT_MS)
 
 
 def _interaction_is_iframe_surface(ctx: ExplorerCtx) -> bool:
@@ -349,7 +414,7 @@ def _widget_host(page: Page) -> ExplorerCtx:
         return page
     host = page.locator(WIDGET_HOST_SELECTOR).first
     try:
-        host.wait_for(state="visible", timeout=12_000)
+        host.wait_for(state="visible", timeout=5_000)
         return host
     except PlaywrightTimeoutError:
         return page
@@ -359,10 +424,21 @@ def _explorer_surfaces(page: Page) -> tuple[ExplorerCtx, ExplorerCtx, bool]:
     """
     Return (interaction_context, read_context, used_iframe).
 
-    The map search is often in a child frame *or* in the shell's light DOM beside the map
-    (not inside <main>), which is why main-only locators kept failing with Iframe: no.
+    Staging embeds the map at ``…/widget/?…`` in ``iframe[src*="/widget/"]``. The address field is
+    ``#location-input`` inside that frame (confirmed via DOM probe — not ``<main>``, not ``pac-target``).
     """
     read = _widget_host(page)
+    try:
+        page.wait_for_selector(EXPLORER_WIDGET_IFRAME_SELECTOR, timeout=min(EXPLORER_IFRAME_PROBE_MS, 8_000))
+        fl = page.frame_locator(EXPLORER_WIDGET_IFRAME_SELECTOR)
+        try:
+            fl.locator("#current-location-text").first.wait_for(state="attached", timeout=min(EXPLORER_IFRAME_PROBE_MS, 5_000))
+        except PlaywrightTimeoutError:
+            pass
+        return fl, read, True
+    except PlaywrightTimeoutError:
+        pass
+
     if IFRAME_SELECTOR:
         try:
             page.wait_for_selector(IFRAME_SELECTOR, timeout=min(EXPLORER_IFRAME_PROBE_MS, 12_000))
@@ -431,21 +507,23 @@ def _locate(ctx: ExplorerCtx, selector: str):
 
 
 def _resolve_address_input(ctx: ExplorerCtx):
-    """Find the visible map / Places field — attributes differ by shell vs embed vs React version."""
+    """Find the map search field — staging uses ``#location-input`` in the /widget/ iframe."""
     builders = [
+        lambda: ctx.locator(WIDGET_MAP_SEARCH_INPUT_SELECTOR).first,
+        lambda: ctx.locator("input#location-input").first,
         lambda: ctx.locator(ADDRESS_INPUT_SELECTOR).first,
         lambda: ctx.locator("input.pac-target-input").first,
         lambda: ctx.get_by_role("searchbox").first,
         lambda: ctx.get_by_role("combobox").first,
         lambda: ctx.locator('input[type="search"]').first,
         lambda: ctx.get_by_label(re.compile(r"current\s+location", re.I)).first,
-        lambda: ctx.get_by_placeholder(re.compile(r"search|address|location", re.I)).first,
+        lambda: ctx.get_by_placeholder(re.compile(r"search|address|location|Enter a location", re.I)).first,
     ]
     last: Optional[Exception] = None
     for mk in builders:
         try:
             loc = mk()
-            loc.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+            loc.wait_for(state="attached", timeout=ATTACH_INPUT_TIMEOUT_MS)
             return loc
         except PlaywrightTimeoutError as exc:
             last = exc
@@ -456,59 +534,504 @@ def _resolve_address_input(ctx: ExplorerCtx):
     ) from last
 
 
-def _select_first_places_suggestion(page: Page, interact_ctx: ExplorerCtx) -> bool:
+def _focus_typeable_input(loc: Locator) -> None:
+    """Focus without a click — ``#location-input`` can be ``display:inline-block`` with 0×0 box (not \"visible\" to Playwright)."""
+    loc.wait_for(state="attached", timeout=ATTACH_INPUT_TIMEOUT_MS)
+    try:
+        loc.scroll_into_view_if_needed(timeout=ATTACH_INPUT_TIMEOUT_MS)
+    except Exception:
+        pass
+    loc.evaluate("el => { el.focus(); if (typeof el.select === 'function') el.select(); }")
+
+
+def _clear_input_value(loc: Locator) -> None:
+    try:
+        loc.fill("", force=True)
+    except Exception:
+        loc.evaluate(
+            """(el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }"""
+        )
+
+
+def _select_first_places_suggestion(
+    page: Page,
+    interact_ctx: ExplorerCtx,
+    address_input: Optional[Locator] = None,
+) -> bool:
     """
     Pick the first Google Places (or ARIA listbox) suggestion.
-    Prefer the same document as the search input (often the embed frame); fall back to top page.
+    The list is often portaled to the *parent* document while ``#location-input`` lives in ``/widget/``.
     """
-    roots: List[ExplorerCtx] = [interact_ctx]
+    roots: List[ExplorerCtx] = []
     if not isinstance(interact_ctx, Page):
         roots.append(page)
+    roots.append(interact_ctx)
     for root in roots:
+        for mk in (
+            lambda r=root: r.get_by_role("option").first,
+            lambda r=root: r.locator('[role="option"]').first,
+            lambda r=root: r.locator('[role="listbox"] li').first,
+        ):
+            try:
+                item = mk()
+                item.wait_for(state="visible", timeout=450)
+                item.click(timeout=ACTION_TIMEOUT_MS, force=True)
+                return True
+            except PlaywrightTimeoutError:
+                continue
+            except Exception:
+                continue
         for sel in PLACES_SUGGESTION_FALLBACK_SELECTORS:
             item = root.locator(sel).first
             try:
                 item.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
-                item.click(timeout=ACTION_TIMEOUT_MS)
+                item.click(timeout=ACTION_TIMEOUT_MS, force=True)
                 return True
             except PlaywrightTimeoutError:
                 continue
+    # Prefer keystrokes on the map search field so they stay in the ``/widget/`` frame.
+    if address_input is not None:
+        try:
+            address_input.press("ArrowDown")
+            page.wait_for_timeout(90)
+            address_input.press("Enter")
+            return True
+        except Exception:
+            pass
     try:
         page.keyboard.press("ArrowDown")
-        page.wait_for_timeout(120)
+        page.wait_for_timeout(90)
         page.keyboard.press("Enter")
         return True
     except Exception:
         return False
 
 
-def _safe_inner_text(locator) -> str:
+def _address_match_tokens(address: str) -> List[str]:
+    """Tokens to match in a Places row (city, state, ZIP, long street tokens)."""
+    raw = [p.strip(",.") for p in address.split() if p.strip(",.")]
+    out: List[str] = []
+    for p in raw:
+        if len(p) < 2:
+            continue
+        if p.isdigit() and len(p) >= 5:
+            out.append(p)
+        elif len(p) >= 4 or (len(p) == 2 and p.isalpha()):
+            out.append(p)
+    return out[-6:]
+
+
+def _select_best_places_suggestion(
+    page: Page,
+    interact_ctx: ExplorerCtx,
+    address: str,
+    address_input: Optional[Locator] = None,
+) -> int:
+    """
+    Pick a Places / list row. Returns:
+      2 — clicked an option whose text matched city/ZIP tokens
+      1 — clicked a generic first suggestion / pac row
+      0 — only keyboard fallback
+    """
+    want = _address_match_tokens(address)
+    want_sorted = sorted({w for w in want if len(w) >= 4 or (w.isdigit() and len(w) >= 5)}, key=len, reverse=True)
+    roots: List[ExplorerCtx] = []
+    if not isinstance(interact_ctx, Page):
+        roots.append(page)
+    roots.append(interact_ctx)
+    for root in roots:
+        try:
+            opts = root.locator('[role="option"]')
+            for i in range(15):
+                try:
+                    txt = (opts.nth(i).inner_text(timeout=450) or "").strip()
+                except Exception:
+                    break
+                if txt and want and any(w.lower() in txt.lower() for w in want):
+                    opts.nth(i).click(timeout=ACTION_TIMEOUT_MS, force=True)
+                    return 2
+        except Exception:
+            continue
+        for tok in want_sorted:
+            try:
+                hit = root.get_by_text(tok, exact=False).first
+                hit.wait_for(state="attached", timeout=500)
+                hit.scroll_into_view_if_needed(timeout=1_000)
+                hit.click(timeout=ACTION_TIMEOUT_MS, force=True)
+                return 2
+            except Exception:
+                continue
+    if _select_first_places_suggestion(page, interact_ctx, address_input):
+        return 1
+    return 0
+
+
+# Words that appear in almost every US postal line — useless for stale-panel detection.
+_GENERIC_STREET_TOKENS: frozenset[str] = frozenset(
+    x.lower()
+    for x in (
+        "Street",
+        "St",
+        "Avenue",
+        "Ave",
+        "Road",
+        "Rd",
+        "Drive",
+        "Dr",
+        "Lane",
+        "Ln",
+        "Boulevard",
+        "Blvd",
+        "Circle",
+        "Cir",
+        "Court",
+        "Ct",
+        "Way",
+        "Place",
+        "Pl",
+        "Parkway",
+        "Pkwy",
+        "Highway",
+        "Hwy",
+        "Route",
+        "Terrace",
+        "Ter",
+        "Trail",
+        "Trl",
+        "North",
+        "South",
+        "East",
+        "West",
+        "Northeast",
+        "Northwest",
+        "Southeast",
+        "Southwest",
+    )
+)
+
+
+def _strong_address_tokens(address: str) -> List[str]:
+    """ZIP and tokens with length ≥ 4 — drop generic street terms that match every address line."""
+    return [
+        t.lower()
+        for t in _address_match_tokens(address)
+        if ((t.isdigit() and len(t) >= 5) or len(t) >= 4) and t.lower() not in _GENERIC_STREET_TOKENS
+    ]
+
+
+def _result_aligns_with_target(
+    *,
+    name: Optional[str],
+    metrics: Dict[str, str],
+    raw_blob: str,
+    input_value: str,
+    address: str,
+) -> bool:
+    """True when the visible outcome still reflects the seed address (not the default Nashville demo)."""
+    blob = " ".join([name or "", raw_blob or "", input_value or "", " ".join(metrics.values())]).lower()
+    want = _strong_address_tokens(address)
+    if not want:
+        return True
+    zips = [t for t in want if t.isdigit() and len(t) >= 5]
+    nonzip = [t for t in want if t not in zips]
+    if nonzip:
+        return any(t in blob for t in nonzip)
+    return any(t in blob for t in zips)
+
+
+def _is_default_nashville_ui(text: Optional[str]) -> bool:
+    """Product ships with Nashville seed in the explorer; don't count it as a real result."""
+    if not text:
+        return False
+    lowx = text.lower()
+    return "201" in lowx and "6th" in lowx and "nashville" in lowx
+
+
+def _react_fill_input(loc: Locator, value: str) -> None:
+    """Set controlled React ``<input>`` value so Places / listbox actually fires (value + input event)."""
+    loc.evaluate(
+        """(el, val) => {
+      const proto = window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) {
+        desc.set.call(el, val);
+      } else {
+        el.value = val;
+      }
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: val }));
+    }""",
+        value,
+    )
+
+
+def _suggestion_roots(page: Page, interact_ctx: ExplorerCtx) -> List[ExplorerCtx]:
+    roots: List[ExplorerCtx] = []
+    if not isinstance(interact_ctx, Page):
+        roots.append(page)
+    roots.append(interact_ctx)
+    return roots
+
+
+def _places_suggestions_visible(page: Page, interact_ctx: ExplorerCtx) -> bool:
+    for root in _suggestion_roots(page, interact_ctx):
+        for sel in (
+            ".pac-container .pac-item",
+            "div.pac-item",
+            '[role="listbox"] [role="option"]',
+            '[role="option"]',
+        ):
+            try:
+                loc = root.locator(sel).first
+                if loc.is_visible():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _wait_for_places_suggestions_ready(page: Page, interact_ctx: ExplorerCtx) -> None:
+    """
+    Wait for Google Places / listbox rows instead of a fixed multi-second sleep.
+    Always waits at least ``PLACES_MIN_WAIT_MS`` (debounce), then polls until visible or ``PLACES_MAX_WAIT_MS`` total.
+    """
+    page.wait_for_timeout(PLACES_MIN_WAIT_MS)
+    deadline = time.monotonic() + PLACES_MAX_WAIT_MS / 1000.0
+    while time.monotonic() < deadline:
+        if _places_suggestions_visible(page, interact_ctx):
+            return
+        page.wait_for_timeout(35)
+
+
+def _safe_inner_text(locator, *, timeout_ms: int = 450) -> str:
     try:
-        if locator.count() == 0:
-            return ""
-        return (locator.inner_text(timeout=3_000) or "").strip()
+        return (locator.inner_text(timeout=timeout_ms) or "").strip()
     except Exception:
         return ""
 
 
-def _extract_neighborhood_name(ctx: ExplorerCtx) -> Optional[str]:
-    txt = _safe_inner_text(ctx.locator(NEIGHBORHOOD_NAME_SELECTOR).first)
-    return txt or None
+def _chrome_heading_text(name: Optional[str]) -> bool:
+    if not name:
+        return True
+    n = name.strip().lower()
+    return n in ("neighborhood explorer", "dream neighborhood", "map and summary")
+
+
+def _extract_widget_heading_line(interact_ctx: ExplorerCtx) -> Optional[str]:
+    """Prefer the map chrome line — single node, avoids scanning dozens of headings."""
+    try:
+        t = _safe_inner_text(interact_ctx.locator("#current-location-text").first, timeout_ms=280)
+        if t and not _chrome_heading_text(t) and not _is_default_nashville_ui(t):
+            return t
+    except Exception:
+        pass
+    return None
+
+
+def _extract_neighborhood_name(
+    ctx: ExplorerCtx,
+    *,
+    max_elements: int = 10,
+    text_timeout_ms: int = 180,
+) -> Optional[str]:
+    """
+    Do not use ``.first`` — in the widget, the first h2 is often the active tab (“Map and Summary”),
+    which we treat as chrome. Scan headings until we find a real place title.
+    """
+    try:
+        loc = ctx.locator(NEIGHBORHOOD_NAME_SELECTOR)
+        for i in range(max_elements):
+            try:
+                txt = _safe_inner_text(loc.nth(i), timeout_ms=text_timeout_ms)
+            except Exception:
+                break
+            if not txt:
+                continue
+            if _chrome_heading_text(txt) or _is_default_nashville_ui(txt):
+                continue
+            if len(txt) < 2:
+                continue
+            return txt
+    except Exception:
+        pass
+    return None
 
 
 def _extract_metrics(ctx: ExplorerCtx) -> Dict[str, str]:
     metrics: Dict[str, str] = {}
     try:
         loc = ctx.locator(METRIC_ROW_SELECTOR)
-        n = min(loc.count(), 40)
-        for i in range(n):
-            t = _safe_inner_text(loc.nth(i))
+        for i in range(16):
+            try:
+                t = _safe_inner_text(loc.nth(i), timeout_ms=180)
+            except Exception:
+                break
             if t and len(t) < 400:
                 key = f"metric_{i+1}"
                 metrics[key] = t
     except Exception:
         pass
     return metrics
+
+
+def _ensure_map_and_summary_tab(interact_ctx: ExplorerCtx, page: Page) -> None:
+    """Keep the explorer on Map + Summary; does not open Demographics / Schools / etc."""
+    roots: List[ExplorerCtx] = [interact_ctx]
+    if not isinstance(interact_ctx, Page):
+        roots.append(page)
+    seen_ids: set[int] = set()
+    uniq: List[ExplorerCtx] = []
+    for r in roots:
+        rid = id(r)
+        if rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        uniq.append(r)
+    for root in uniq:
+        builders = (
+            lambda r=root: r.get_by_role("tab", name=re.compile(r"map\s*(and|&)\s*summary", re.I)).first,
+            lambda r=root: r.locator('[role="tab"]:has-text("Map and Summary")').first,
+        )
+        for mk in builders:
+            try:
+                loc = mk()
+                if not loc.is_visible():
+                    continue
+                if loc.get_attribute("aria-selected") == "true":
+                    return
+                loc.click(timeout=ACTION_TIMEOUT_MS, force=True)
+                page.wait_for_timeout(90)
+                return
+            except Exception:
+                continue
+
+
+def _window_around(text: str, phrase: str, *, before: int = 96, after: int = 220) -> str:
+    if not text or not phrase:
+        return ""
+    t = text.lower()
+    p = phrase.lower()
+    i = t.find(p)
+    if i < 0:
+        return ""
+    start = max(0, i - before)
+    end = min(len(text), i + len(phrase) + after)
+    return text[start:end]
+
+
+def _first_money_in_chunk(chunk: str) -> Optional[int]:
+    if not chunk:
+        return None
+    if re.search(r"not\s+available", chunk, re.I):
+        return None
+    m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", chunk)
+    if not m:
+        return None
+    raw = m.group(1).replace(",", "")
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    return int(round(v))
+
+
+def _first_pct_in_chunk(chunk: str) -> Optional[int]:
+    if not chunk:
+        return None
+    if re.search(r"not\s+available", chunk, re.I):
+        return None
+    m = re.search(r"(\d+)\s*%", chunk)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict[str, str]]:
+    """
+    Validate the right-hand summary KPI block.
+
+    ``raw`` must include the embedded ``/widget/`` iframe document text (see
+    ``_collect_raw_blob_for_summary``) — the host page ``body`` alone does not contain these strings.
+    """
+    snap: Dict[str, str] = {}
+    low = (raw or "").lower()
+    missing = [p for p in SUMMARY_REQUIRED_PHRASES if p not in low]
+    if missing:
+        return False, f"summary_missing:{','.join(missing[:6])}", snap
+
+    inc = _first_money_in_chunk(_window_around(raw, "household income"))
+    if inc is None:
+        return False, "summary_household_income_not_numeric", snap
+    if not (SUMMARY_INCOME_MIN <= inc <= SUMMARY_INCOME_MAX):
+        return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
+    snap["household_income"] = str(inc)
+
+    home = _first_money_in_chunk(_window_around(raw, "median home price"))
+    if home is None:
+        return False, "summary_median_home_price_not_numeric", snap
+    if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
+        return False, f"summary_median_home_price_out_of_range:{home}", {**snap, "median_home_price": str(home)}
+    snap["median_home_price"] = str(home)
+
+    rent = _first_money_in_chunk(_window_around(raw, "median rent"))
+    if rent is None:
+        return False, "summary_median_rent_not_numeric", snap
+    if not (SUMMARY_RENT_MIN <= rent <= SUMMARY_RENT_MAX):
+        return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
+    snap["median_rent"] = str(rent)
+
+    owners = _first_pct_in_chunk(_window_around(raw, "occupied by owners"))
+    if owners is None:
+        return False, "summary_occupied_by_owners_pct_missing", snap
+    if not (SUMMARY_PCT_MIN <= owners <= SUMMARY_PCT_MAX):
+        return False, f"summary_occupied_by_owners_pct_out_of_range:{owners}", snap
+    snap["occupied_by_owners_pct"] = str(owners)
+
+    college = _first_pct_in_chunk(_window_around(raw, "has college degree"))
+    if college is None:
+        return False, "summary_college_degree_pct_missing", snap
+    if not (SUMMARY_PCT_MIN <= college <= SUMMARY_PCT_MAX):
+        return False, f"summary_college_degree_pct_out_of_range:{college}", snap
+    snap["college_degree_pct"] = str(college)
+
+    hs = _first_pct_in_chunk(_window_around(raw, "finished high school"))
+    if hs is None:
+        return False, "summary_high_school_pct_missing", snap
+    if not (SUMMARY_PCT_MIN <= hs <= SUMMARY_PCT_MAX):
+        return False, f"summary_high_school_pct_out_of_range:{hs}", snap
+    snap["finished_high_school_pct"] = str(hs)
+
+    emp = _first_pct_in_chunk(_window_around(raw, "employed", after=280))
+    if emp is None:
+        return False, "summary_employed_pct_missing", snap
+    if not (SUMMARY_PCT_MIN <= emp <= SUMMARY_PCT_MAX):
+        return False, f"summary_employed_pct_out_of_range:{emp}", snap
+    snap["employed_pct"] = str(emp)
+
+    return True, None, snap
+
+
+def _collect_raw_blob_for_summary(
+    page: Page,
+    interact_ctx: ExplorerCtx,
+    *,
+    used_iframe: bool,
+) -> str:
+    """
+    Text used for login-wall checks, alignment, and summary validation.
+
+    Staging keeps the map + right-hand summary inside ``iframe[src*="/widget/"]``. The host
+    ``document.body`` innerText does **not** include iframe contents, so we must merge the
+    widget ``body`` text or validation always sees ``summary_missing``.
+    """
+    chunks: List[str] = []
+    chunks.append(_safe_inner_text(page.locator("body").first, timeout_ms=900))
+    if used_iframe and _interaction_is_iframe_surface(interact_ctx):
+        chunks.append(_safe_inner_text(interact_ctx.locator("body").first, timeout_ms=2_000))
+    return "\n".join(c for c in chunks if c)
 
 
 def _extract_error(ctx: ExplorerCtx) -> Optional[str]:
@@ -528,44 +1051,139 @@ def _wait_for_loading_done(ctx: ExplorerCtx, page: Page, overall_deadline: float
     if not LOADING_SELECTOR:
         return
     loader = ctx.locator(LOADING_SELECTOR).first
+    cap = max(0, int((overall_deadline - time.monotonic()) * 1000))
+    if cap < 50:
+        return
     try:
-        loader.wait_for(state="visible", timeout=min(3_000, max(0, int((overall_deadline - time.monotonic()) * 1000))))
+        loader.wait_for(state="visible", timeout=min(280, cap))
     except PlaywrightTimeoutError:
         return
-    remaining_ms = max(500, int((overall_deadline - time.monotonic()) * 1000))
+    remaining_ms = max(80, int((overall_deadline - time.monotonic()) * 1000))
     try:
-        loader.wait_for(state="hidden", timeout=remaining_ms)
+        # Do not spend the whole RESULT_TIMEOUT waiting on a selector that might false-match.
+        loader.wait_for(state="hidden", timeout=min(1_200, remaining_ms))
     except PlaywrightTimeoutError:
         pass
 
 
-def _wait_for_explorer_outcome(ctx: ExplorerCtx, page: Page) -> None:
+def _panel_wait_tokens(address: str) -> List[str]:
+    """Tokens ordered for ``#current-location-text`` — long street/city before ZIP (ZIP can match stale)."""
+    raw = [p for p in _address_match_tokens(address) if p.lower() not in _GENERIC_STREET_TOKENS]
+    out: List[str] = []
+    longs = sorted(
+        {p for p in raw if (len(p) >= 5 and not p.isdigit()) or (len(p) >= 6)},
+        key=len,
+        reverse=True,
+    )
+    for p in longs[:3]:
+        out.append(p)
+    for p in raw:
+        if p.isdigit() and len(p) >= 5 and p not in out:
+            out.append(p)
+            break
+    for p in raw:
+        if len(p) >= 4 and p not in out:
+            out.append(p)
+        if len(out) >= 6:
+            break
+    return out[:6]
+
+
+def _try_wait_panel_location_line(interact_ctx: ExplorerCtx, address: str, deadline: float) -> bool:
+    """Return True once the map header shows a token from the target address (signals fetch done)."""
+    for tok in _panel_wait_tokens(address):
+        ms = int(max(0.0, deadline - time.monotonic()) * 1000)
+        if ms < 120:
+            return False
+        try:
+            pat = re.compile(re.escape(tok), re.I)
+            interact_ctx.locator("#current-location-text").filter(has_text=pat).first.wait_for(
+                state="visible",
+                timeout=ms,
+            )
+            return True
+        except PlaywrightTimeoutError:
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _wait_for_explorer_outcome(
+    read_ctx: ExplorerCtx,
+    interact_ctx: ExplorerCtx,
+    page: Page,
+    address: str,
+) -> None:
     """
-    Poll until we see an error, a neighborhood title, non-trivial metrics, or time out.
-    Does not assume RESULT_READY_SELECTOR is correct — uses observable text/metrics.
+    Panel fetch is usually a few seconds. Prefer the summary headline inside the widget iframe,
+    then ``#current-location-text`` tokens, then heading/metrics polling.
     """
     deadline = time.monotonic() + RESULT_TIMEOUT_MS / 1000.0
     page.wait_for_timeout(MIN_POST_SUBMIT_WAIT_MS)
-    _wait_for_loading_done(ctx, page, deadline)
+    _wait_for_loading_done(read_ctx, page, deadline)
+    if interact_ctx is not read_ctx:
+        _wait_for_loading_done(interact_ctx, page, deadline)
+
+    err = _extract_error(read_ctx) or _extract_error(interact_ctx)
+    if err:
+        page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
+        return
+
+    if _interaction_is_iframe_surface(interact_ctx):
+        ms = int(max(0.0, deadline - time.monotonic()) * 1000)
+        if ms >= 160:
+            try:
+                interact_ctx.get_by_text(
+                    re.compile(r"summary\s+for\s+selected\s+area", re.I)
+                ).first.wait_for(state="attached", timeout=min(ms, 4_500))
+                page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
+                return
+            except PlaywrightTimeoutError:
+                pass
+
+    want = _strong_address_tokens(address)
+    if want and _try_wait_panel_location_line(interact_ctx, address, deadline):
+        page.wait_for_timeout(25)
+        name = (
+            _extract_neighborhood_name(read_ctx)
+            or _extract_widget_heading_line(interact_ctx)
+            or _extract_neighborhood_name(interact_ctx)
+        )
+        metrics = {**_extract_metrics(read_ctx), **_extract_metrics(interact_ctx)}
+        if _result_aligns_with_target(
+            name=name,
+            metrics=metrics,
+            raw_blob="",
+            input_value="",
+            address=address,
+        ):
+            page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
+            return
 
     while time.monotonic() < deadline:
-        err = _extract_error(ctx)
+        err = _extract_error(read_ctx) or _extract_error(interact_ctx)
         if err:
             break
-        name = _extract_neighborhood_name(ctx)
-        if name and len(name.strip()) > 2:
+        name = (
+            _extract_neighborhood_name(read_ctx)
+            or _extract_widget_heading_line(interact_ctx)
+            or _extract_neighborhood_name(interact_ctx)
+        )
+        metrics = {**_extract_metrics(read_ctx), **_extract_metrics(interact_ctx)}
+        if want and _result_aligns_with_target(
+            name=name,
+            metrics=metrics,
+            raw_blob="",
+            input_value="",
+            address=address,
+        ):
             break
-        metrics = _extract_metrics(ctx)
-        if _metrics_non_trivial(metrics):
+        if not want and name and len(name.strip()) > 2:
             break
-        try:
-            ctx.locator(RESULT_READY_SELECTOR).first.wait_for(
-                state="visible",
-                timeout=min(RESULT_SETTLE_POLL_MS * 2, int(max(100, (deadline - time.monotonic()) * 1000))),
-            )
-        except PlaywrightTimeoutError:
-            pass
-        _wait_for_loading_done(ctx, page, deadline)
+        _wait_for_loading_done(read_ctx, page, deadline)
+        if interact_ctx is not read_ctx:
+            _wait_for_loading_done(interact_ctx, page, deadline)
         page.wait_for_timeout(RESULT_SETTLE_POLL_MS)
 
     page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
@@ -634,17 +1252,68 @@ def _build_outcome(
     )
 
 
-def _clear_address_field(ctx: ExplorerCtx) -> None:
+def _reveal_map_search_input(ctx: ExplorerCtx, page: Page) -> None:
+    """
+    Desktop layout keeps ``#location-input`` inside ``.hidden`` until the user clicks the visible
+    current-location label (seed address). Typing without this step updates a field the map does not use.
+    """
+    for sel in MAP_SEARCH_REVEAL_SELECTORS:
+        try:
+            loc = ctx.locator(sel).first
+            loc.wait_for(state="attached", timeout=5_000)
+            loc.click(timeout=5_000, force=True)
+            page.wait_for_timeout(60)
+            return
+        except Exception:
+            continue
+
+
+def _clear_address_field(ctx: ExplorerCtx, page: Page) -> None:
+    _reveal_map_search_input(ctx, page)
     try:
         inp = _resolve_address_input(ctx)
-        inp.click(timeout=ACTION_TIMEOUT_MS)
-        inp.fill("")
+        _focus_typeable_input(inp)
+        try:
+            inp.press("Control+a")
+            inp.press("Backspace")
+        except Exception:
+            _clear_input_value(inp)
         if CLEAR_BUTTON_SELECTOR:
             btn = ctx.locator(CLEAR_BUTTON_SELECTOR).first
-            if btn.count() > 0:
-                btn.click(timeout=ACTION_TIMEOUT_MS)
+            try:
+                if btn.count() > 0:
+                    btn.click(timeout=ACTION_TIMEOUT_MS, force=True)
+            except Exception:
+                pass
     except Exception:
         pass
+
+
+def _click_view_neighborhood_cta(interact_ctx: ExplorerCtx, page: Page) -> None:
+    """Map footer CTA — not always a plain ``button`` matching SUBMIT_BUTTON_SELECTOR."""
+    roots: List[ExplorerCtx] = [interact_ctx]
+    if not isinstance(interact_ctx, Page):
+        roots.append(page)
+    last_exc: Optional[Exception] = None
+    for root in roots:
+        builders = (
+            lambda r=root: r.get_by_role("button", name=re.compile(r"view\s+neighborhood\s+data", re.I)).first,
+            lambda r=root: r.locator('button:has-text("View Neighborhood Data")').first,
+            lambda r=root: r.locator('[role="button"]:has-text("View Neighborhood Data")').first,
+            lambda r=root: r.get_by_text(re.compile(r"View\s+Neighborhood\s+Data", re.I)).first,
+            lambda r=root: r.locator("text=/View\\s+Neighborhood\\s+Data/i").first,
+            lambda r=root: r.locator(SUBMIT_BUTTON_SELECTOR).first,
+        )
+        for mk in builders:
+            try:
+                loc = mk()
+                loc.wait_for(state="attached", timeout=5_000)
+                loc.click(timeout=SUBMIT_CLICK_TIMEOUT_MS, force=True)
+                return
+            except Exception as exc:
+                last_exc = exc
+                continue
+    raise PlaywrightTimeoutError(f"Could not click explorer CTA: {last_exc!r}") from last_exc
 
 
 def _submit_and_collect(
@@ -670,20 +1339,69 @@ def _submit_and_collect(
     Dict[str, Any],
 ]:
     error_msg: Optional[str] = None
-    _clear_address_field(interact_ctx)
+    _ensure_map_and_summary_tab(interact_ctx, page)
+    _clear_address_field(interact_ctx, page)
     inp = _resolve_address_input(interact_ctx)
-    inp.click(timeout=ACTION_TIMEOUT_MS)
-    inp.fill("")
-    # Keystrokes + debounce so Places returns suggestions; fill() alone often skips the dropdown.
-    inp.press_sequentially(address, delay=ADDRESS_TYPE_DELAY_MS)
-    page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
-    if not _select_first_places_suggestion(page, interact_ctx):
-        error_msg = "autocomplete_no_suggestion_clicked"
+    try:
+        if bool(inp.evaluate("el => !!el.closest('.hidden')")):
+            _reveal_map_search_input(interact_ctx, page)
+    except Exception:
+        _reveal_map_search_input(interact_ctx, page)
+    _focus_typeable_input(inp)
+    # Route keystrokes through the input locator so they land in the /widget/ iframe (``page.keyboard`` can miss).
+    try:
+        inp.press("Control+a")
+        inp.press("Backspace")
+    except Exception:
+        try:
+            _clear_input_value(inp)
+        except Exception:
+            pass
+    page.wait_for_timeout(35)
+    try:
+        inp.click(timeout=5_000, force=True)
+    except Exception:
+        pass
+    try:
+        inp.fill(address, force=True)
+    except Exception:
+        try:
+            _react_fill_input(inp, address)
+        except Exception:
+            pass
+    _wait_for_places_suggestions_ready(page, interact_ctx)
+    visible = _places_suggestions_visible(page, interact_ctx)
+    try:
+        got = (inp.input_value(timeout=800) or "").strip()
+    except Exception:
+        got = ""
+    need_keystrokes = (not visible) and (
+        len(got) < min(12, max(6, len(address) // 2))
+    )
+    if need_keystrokes:
+        try:
+            inp.press("Control+a")
+            inp.press("Backspace")
+        except Exception:
+            pass
+        try:
+            inp.press_sequentially(address, delay=ADDRESS_TYPE_DELAY_MS)
+        except Exception:
+            try:
+                _react_fill_input(inp, address)
+            except Exception:
+                pass
+        _wait_for_places_suggestions_ready(page, interact_ctx)
+    pick = _select_best_places_suggestion(page, interact_ctx, address, inp)
+    if pick == 0:
+        try:
+            inp.press("Enter")
+        except Exception:
+            pass
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
     try:
-        sub = _locate(interact_ctx, SUBMIT_BUTTON_SELECTOR)
-        sub.click(timeout=ACTION_TIMEOUT_MS)
+        _click_view_neighborhood_cta(interact_ctx, page)
     except Exception as exc:
         error_msg = (error_msg + "; ") if error_msg else ""
         error_msg = f"{error_msg}submit_click_failed: {exc}"
@@ -694,19 +1412,29 @@ def _submit_and_collect(
 
     page.wait_for_timeout(POST_SUBMIT_STABILITY_MS)
 
-    _wait_for_explorer_outcome(read_ctx, page)
+    _wait_for_explorer_outcome(read_ctx, interact_ctx, page, address)
+    _ensure_map_and_summary_tab(interact_ctx, page)
 
-    err = _extract_error(read_ctx)
-    name = _extract_neighborhood_name(read_ctx)
-    metrics = _extract_metrics(read_ctx)
-    raw_blob = ""
+    name = (
+        _extract_neighborhood_name(read_ctx)
+        or _extract_widget_heading_line(interact_ctx)
+        or _extract_neighborhood_name(interact_ctx)
+    )
+    err = _extract_error(read_ctx) or _extract_error(interact_ctx)
+    m_read = _extract_metrics(read_ctx)
+    m_embed = _extract_metrics(interact_ctx)
+    raw_blob = _collect_raw_blob_for_summary(page, interact_ctx, used_iframe=used_iframe)
+    summary_ok, summary_err, summary_snap = _validate_map_summary_from_text(raw_blob)
+    metrics = {**m_read, **m_embed, **{f"summary_{k}": v for k, v in summary_snap.items()}}
+
+    input_value = ""
     try:
-        raw_blob = _safe_inner_text(read_ctx.locator("body").first)
+        input_value = (inp.input_value(timeout=800) or "").strip()
     except Exception:
         try:
-            raw_blob = _safe_inner_text(page.locator("body").first)
+            input_value = str(inp.evaluate("e => e.value || ''") or "").strip()
         except Exception:
-            raw_blob = ""
+            input_value = ""
 
     login_wall = "sign in to your account" in (raw_blob or "").lower()
     if login_wall:
@@ -721,6 +1449,31 @@ def _submit_and_collect(
             if len((raw_blob or "").split()) < 8:
                 success = False
                 error_msg = error_msg or "no_clear_result"
+        if success:
+            if not summary_ok:
+                success = False
+                error_msg = error_msg or summary_err or "summary_panel_invalid"
+            # Require visible panel copy to match — ``input_value`` alone can update before the summary rerenders.
+            panel_aligns = _result_aligns_with_target(
+                name=name,
+                metrics=metrics,
+                raw_blob=raw_blob,
+                input_value="",
+                address=address,
+            )
+            any_aligns = _result_aligns_with_target(
+                name=name,
+                metrics=metrics,
+                raw_blob=raw_blob,
+                input_value=input_value,
+                address=address,
+            )
+            if success and name and not panel_aligns:
+                success = False
+                error_msg = error_msg or "neighborhood_result_does_not_match_target_address"
+            elif success and not name and not any_aligns:
+                success = False
+                error_msg = error_msg or "neighborhood_result_does_not_match_target_address"
 
     page_url = page.url
     outcome_code, diagnosis, evidence = _build_outcome(
@@ -756,14 +1509,19 @@ def run_one(
     source_tag: str,
     artifacts_dir: Path,
     had_login_config: bool,
+    *,
+    navigate: bool = True,
 ) -> TestRow:
     started = time.perf_counter()
     last_exc: Optional[str] = None
     last: Optional[TestRow] = None
+    last_used_iframe = False
     for attempt in range(1, RETRIES_PER_ADDRESS + 1):
         try:
-            page.goto(STAGING_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            if navigate or attempt > 1:
+                page.goto(STAGING_URL, wait_until="commit", timeout=EXPLORER_GOTO_TIMEOUT_MS)
             interact_ctx, read_ctx, used_iframe = _explorer_surfaces(page)
+            last_used_iframe = used_iframe
             (
                 ok,
                 name,
@@ -861,7 +1619,7 @@ def run_one(
         outcome_code="exception",
         diagnosis=f"A Playwright exception escaped the inner retry loop: {last_exc}",
         page_url=getattr(page, "url", "") or "",
-        used_iframe=False,
+        used_iframe=last_used_iframe,
         evidence={"exception": last_exc or "unknown"},
     )
 
@@ -1176,7 +1934,17 @@ def main() -> int:
                     current={"id": i, "state": state, "address": address, "phase": "running"},
                     meta_extra=meta_x,
                 )
-            row = run_one(page, i, state, address, src, artifacts_dir, had_login_config)
+            row = run_one(
+                page,
+                i,
+                state,
+                address,
+                src,
+                artifacts_dir,
+                had_login_config,
+            # ``goto`` every address except the first when login already landed on this URL (saves one navigation).
+            navigate=not (i == 1 and had_login_config),
+            )
             rows.append(row)
             tqdm.write(_report_address_result(i, state, address, row))
             sys.stdout.flush()
@@ -1216,14 +1984,14 @@ def main() -> int:
     dash_json = dashboard_dir / "results.json"
     shutil.copyfile(out_path, dash_json)
 
-    print("\n✅ Testing complete!\n")
+    print("\nTesting complete.\n")
     print(f"   Wrote machine JSON: {out_path}")
     print(f"   Dashboard data:     {dash_json}")
     if args.live_port is not None and args.live_port > 0:
         print(f"   Live snapshot:      {live_path} (final)")
         print("   The local server has exited; reopen live mode on the next run with --live-port.\n")
     print()
-    print("✅ Dashboard ready at: dashboard/index.html")
+    print("Dashboard ready at: dashboard/index.html")
     print()
     print("To deploy to Netlify:")
     print("  1. Drag the entire 'dashboard' folder to https://app.netlify.com/drop")
