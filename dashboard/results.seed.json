@@ -1,0 +1,12 @@
+{
+  "meta": {
+    "run_status": "idle",
+    "total_tests": 0,
+    "planned_total": 0,
+    "completed": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "note": "Placeholder for static hosting. Run the explorer locally or in GitHub Actions, then copy the real JSON over dashboard/results.json (ignored by git) or publish via CI."
+  },
+  "results": []
+}

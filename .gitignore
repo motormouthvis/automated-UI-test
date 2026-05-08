@@ -8,3 +8,4 @@ __pycache__/
 artifacts/
 /results.json
 dashboard/live_state.json
+dashboard/results.json

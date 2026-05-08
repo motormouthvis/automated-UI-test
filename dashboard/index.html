@@ -58,7 +58,7 @@
         <li>
           <strong>GitHub (closest to “run from the web”):</strong>
           <a id="linkActions" class="font-medium underline decoration-indigo-300 underline-offset-2" href="https://github.com/motormouthvis/automated-UI-test/actions/workflows/run-explorer-tests.yml" target="_blank" rel="noopener">Actions → Run workflow</a>
-          — add repo secrets <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_EMAIL</code> / <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_PASSWORD</code>, download the <strong>explorer-results</strong> artifact, replace <code class="rounded bg-white/80 px-1">dashboard/results.json</code>, commit, push.
+          — add repo secrets <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_EMAIL</code> / <code class="rounded bg-white/80 px-1">DREAM_NEIGHBORHOOD_PASSWORD</code>, download the <strong>explorer-results</strong> artifact, and drop <code class="rounded bg-white/80 px-1">dashboard/results.json</code> into a deploy (or copy it locally; that file is gitignored so runs do not dirty the repo).
         </li>
       </ul>
       <p id="loginWarning" class="mt-3 hidden rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-950">

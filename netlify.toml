@@ -2,4 +2,6 @@
 # https://docs.netlify.com/configure-builds/file-based-configuration/
 
 [build]
+  # dashboard/results.json is gitignored (local runs overwrite it). Ship a valid empty snapshot on Netlify.
+  command = "cp dashboard/results.seed.json dashboard/results.json"
   publish = "dashboard"
