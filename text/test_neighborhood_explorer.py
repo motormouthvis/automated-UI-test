@@ -8,10 +8,8 @@ summary panel). It does **not** open Demographics, Schools, Commutes, or other t
 Flow per address:
   1. Ensure **Map and Summary** is active.
   2. Enter the address (Places), choose a suggestion, click **View Neighborhood Data**.
-  3. Assert the **summary panel** shows the expected headings (e.g. “Summary for selected area”,
-     “About the data”, Household Income, Median Home Price (**or “Not available”** for that metric),
-     **Median Rent or Median Age** (product varies by area), occupancy, education, employment)
-     with **numeric values in normal ranges** where present (see CONFIG).
+  3. Assert the **summary panel** shows the expected headings and **numeric** KPIs (see CONFIG).
+     **Not available** (or any missing dollar / percent where expected) is a **failed** test.
   4. Confirm the panel still reflects the entered place (token alignment on the title line).
 
 ================================================================================
@@ -960,13 +958,24 @@ def _last_dollar_in_chunk(chunk: str) -> Optional[int]:
     return last
 
 
-def _median_home_price_marked_unavailable(raw: str) -> bool:
+def _kpi_shows_not_available(
+    raw: str,
+    label: str,
+    *,
+    before: int = 200,
+    after: int = 80,
+    prefer_last_label: bool = False,
+) -> bool:
+    """True when **Not available** appears next to this heading in the widget ``innerText``."""
     low = raw.lower()
-    i = low.find("median home price")
+    lab = label.lower()
+    i = low.rfind(lab) if prefer_last_label else low.find(lab)
     if i < 0:
         return False
-    before_s = raw[max(0, i - 200) : i]
-    return bool(re.search(r"not\s+available", before_s, re.I))
+    before_s = raw[max(0, i - before) : i]
+    after_s = raw[i + len(lab) : i + len(lab) + after]
+    na = re.compile(r"not\s+available", re.I)
+    return bool(na.search(before_s) or na.search(after_s))
 
 
 def _dollar_near_label(
@@ -975,15 +984,8 @@ def _dollar_near_label(
     *,
     before: int = 200,
     after: int = 120,
-    ignore_trailing_dollar_after_if_na_before: bool = False,
 ) -> Optional[int]:
-    """
-    Money associated with a KPI label. The widget often emits the dollar line *above* the label.
-
-    When ``ignore_trailing_dollar_after_if_na_before`` is True, do not take the first ``$`` *after*
-    the label if the window *before* the label contains **Not available** — the next dollar is
-    almost always **median rent**, not home price.
-    """
+    """Money associated with a KPI label. The widget often emits the dollar line *above* the label."""
     low = raw.lower()
     lab = label.lower()
     i = low.find(lab)
@@ -994,8 +996,6 @@ def _dollar_near_label(
     v = _last_dollar_in_chunk(before_s)
     if v is not None:
         return v
-    if ignore_trailing_dollar_after_if_na_before and re.search(r"not\s+available", before_s, re.I):
-        return None
     return _first_dollar_in_chunk(after_s)
 
 
@@ -1096,6 +1096,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
 
     ``raw`` must include the embedded ``/widget/`` iframe document text (see
     ``_collect_raw_blob_for_summary``) — the host page ``body`` alone does not contain these strings.
+
+    **Not available** on a required row (or a missing numeric where one is expected) is a failure.
     """
     snap: Dict[str, str] = {}
     low = (raw or "").lower()
@@ -1104,6 +1106,9 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_missing:{','.join(missing[:6])}", snap
     if not any(p in low for p in SUMMARY_RENT_OR_AGE_PHRASES):
         return False, "summary_missing:median rent or median age", snap
+
+    if _kpi_shows_not_available(raw, "household income"):
+        return False, "summary_household_income_not_available", snap
 
     inc = _dollar_near_label(raw, "household income")
     if inc is None:
@@ -1114,20 +1119,20 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
     snap["household_income"] = str(inc)
 
-    home = _dollar_near_label(raw, "median home price", ignore_trailing_dollar_after_if_na_before=True)
-    if home is None and not _median_home_price_marked_unavailable(raw):
+    if _kpi_shows_not_available(raw, "median home price"):
+        return False, "summary_median_home_price_not_available", snap
+    home = _dollar_near_label(raw, "median home price")
+    if home is None:
         home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
     if home is None:
-        if _median_home_price_marked_unavailable(raw):
-            snap["median_home_price"] = "not_available"
-        else:
-            return False, "summary_median_home_price_not_numeric", snap
-    elif not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
+        return False, "summary_median_home_price_not_numeric", snap
+    if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
         return False, f"summary_median_home_price_out_of_range:{home}", {**snap, "median_home_price": str(home)}
-    else:
-        snap["median_home_price"] = str(home)
+    snap["median_home_price"] = str(home)
 
     if "median rent" in low:
+        if _kpi_shows_not_available(raw, "median rent"):
+            return False, "summary_median_rent_not_available", snap
         rent = _dollar_near_label(raw, "median rent")
         if rent is None:
             rent = _first_money_in_chunk(_slice_after_phrase(raw, "median rent"))
@@ -1137,6 +1142,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
             return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
         snap["median_rent"] = str(rent)
     else:
+        if _kpi_shows_not_available(raw, "median age"):
+            return False, "summary_median_age_not_available", snap
         age_val = _median_age_near_label(raw)
         if age_val is None:
             return False, "summary_median_age_not_numeric", snap
@@ -1144,6 +1151,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
             return False, f"summary_median_age_out_of_range:{age_val}", snap
         snap["median_age"] = str(age_val)
 
+    if _kpi_shows_not_available(raw, "occupied by owners"):
+        return False, "summary_occupied_by_owners_not_available", snap
     owners = _pct_near_label(raw, "occupied by owners", last_pct_before=True)
     if owners is None:
         return False, "summary_occupied_by_owners_pct_missing", snap
@@ -1151,6 +1160,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_occupied_by_owners_pct_out_of_range:{owners}", snap
     snap["occupied_by_owners_pct"] = str(owners)
 
+    if _kpi_shows_not_available(raw, "has college degree"):
+        return False, "summary_college_degree_not_available", snap
     college = _pct_near_label(raw, "has college degree")
     if college is None:
         return False, "summary_college_degree_pct_missing", snap
@@ -1158,6 +1169,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_college_degree_pct_out_of_range:{college}", snap
     snap["college_degree_pct"] = str(college)
 
+    if _kpi_shows_not_available(raw, "finished high school"):
+        return False, "summary_high_school_not_available", snap
     hs = _pct_near_label(raw, "finished high school")
     if hs is None:
         return False, "summary_high_school_pct_missing", snap
@@ -1165,6 +1178,8 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
         return False, f"summary_high_school_pct_out_of_range:{hs}", snap
     snap["finished_high_school_pct"] = str(hs)
 
+    if _kpi_shows_not_available(raw, "employed", prefer_last_label=True):
+        return False, "summary_employed_not_available", snap
     emp = _pct_near_label(raw, "employed", after=280)
     if emp is None:
         return False, "summary_employed_pct_missing", snap
