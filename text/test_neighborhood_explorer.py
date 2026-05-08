@@ -204,16 +204,17 @@ EXPLORER_GOTO_TIMEOUT_MS = 18_000
 LOGIN_ACTION_TIMEOUT_MS = 25_000
 # Explorer: fail fast when selectors/autocomplete are wrong (user preference ~3s per action).
 ACTION_TIMEOUT_MS = 2_000
-# Panel fetch is usually a few seconds; do not burn wall time on unrelated spinners.
-RESULT_TIMEOUT_MS = 5_000
+# Summary KPIs usually render within a few seconds; cap wait so each address stays ~5–10s excluding cold navigation.
+RESULT_TIMEOUT_MS = 6_000
 RETRIES_PER_ADDRESS = 1
 RETRY_BASE_SLEEP_SEC = 0.25
 POST_SUBMIT_STABILITY_MS = 15
 # Short pause after CTA so the request starts — summary copy lives in the /widget/ iframe.
 MIN_POST_SUBMIT_WAIT_MS = 20
-RESULT_SETTLE_POLL_MS = 28
+# Light polling interval while waiting for summary copy (avoid heavy DOM walks each tick).
+RESULT_POLL_MS = 90
 # After success/error is detected, brief pause so late-bound text/metrics can render.
-STABILIZE_AFTER_OUTCOME_MS = 35
+STABILIZE_AFTER_OUTCOME_MS = 100
 
 # US state codes (50 states). ~count/20 per state when count=1000.
 ALL_US_STATE_CODES: List[str] = [
@@ -909,16 +910,23 @@ def _ensure_map_and_summary_tab(interact_ctx: ExplorerCtx, page: Page) -> None:
                 continue
 
 
-def _window_around(text: str, phrase: str, *, before: int = 96, after: int = 220) -> str:
+def _slice_after_phrase(text: str, phrase: str, *, max_after: int = 320) -> str:
+    """
+    Text *after* the first case-insensitive occurrence of ``phrase``.
+
+    Used for KPI parsing: including characters *before* the label made
+    ``_first_money_in_chunk`` pick an earlier dollar amount (e.g. median home
+    price) while validating median rent.
+    """
     if not text or not phrase:
         return ""
-    t = text.lower()
+    low = text.lower()
     p = phrase.lower()
-    i = t.find(p)
+    i = low.find(p)
     if i < 0:
         return ""
-    start = max(0, i - before)
-    end = min(len(text), i + len(phrase) + after)
+    start = i + len(p)
+    end = min(len(text), start + max_after)
     return text[start:end]
 
 
@@ -928,14 +936,21 @@ def _first_money_in_chunk(chunk: str) -> Optional[int]:
     if re.search(r"not\s+available", chunk, re.I):
         return None
     m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", chunk)
+    if m:
+        raw = m.group(1).replace(",", "")
+        try:
+            return int(round(float(raw)))
+        except ValueError:
+            return None
+    # Some builds omit "$" on stat lines — require 4+ digit values to avoid years like 2024.
+    m = re.search(r"(?<![\d.\-,])(\d{1,3}(?:,\d{3})+|\d{4,})(?![\d.\-])", chunk)
     if not m:
         return None
     raw = m.group(1).replace(",", "")
     try:
-        v = float(raw)
+        return int(raw)
     except ValueError:
         return None
-    return int(round(v))
 
 
 def _first_pct_in_chunk(chunk: str) -> Optional[int]:
@@ -962,49 +977,49 @@ def _validate_map_summary_from_text(raw: str) -> Tuple[bool, Optional[str], Dict
     if missing:
         return False, f"summary_missing:{','.join(missing[:6])}", snap
 
-    inc = _first_money_in_chunk(_window_around(raw, "household income"))
+    inc = _first_money_in_chunk(_slice_after_phrase(raw, "household income"))
     if inc is None:
         return False, "summary_household_income_not_numeric", snap
     if not (SUMMARY_INCOME_MIN <= inc <= SUMMARY_INCOME_MAX):
         return False, f"summary_household_income_out_of_range:{inc}", {**snap, "household_income": str(inc)}
     snap["household_income"] = str(inc)
 
-    home = _first_money_in_chunk(_window_around(raw, "median home price"))
+    home = _first_money_in_chunk(_slice_after_phrase(raw, "median home price"))
     if home is None:
         return False, "summary_median_home_price_not_numeric", snap
     if not (SUMMARY_HOME_PRICE_MIN <= home <= SUMMARY_HOME_PRICE_MAX):
         return False, f"summary_median_home_price_out_of_range:{home}", {**snap, "median_home_price": str(home)}
     snap["median_home_price"] = str(home)
 
-    rent = _first_money_in_chunk(_window_around(raw, "median rent"))
+    rent = _first_money_in_chunk(_slice_after_phrase(raw, "median rent"))
     if rent is None:
         return False, "summary_median_rent_not_numeric", snap
     if not (SUMMARY_RENT_MIN <= rent <= SUMMARY_RENT_MAX):
         return False, f"summary_median_rent_out_of_range:{rent}", {**snap, "median_rent": str(rent)}
     snap["median_rent"] = str(rent)
 
-    owners = _first_pct_in_chunk(_window_around(raw, "occupied by owners"))
+    owners = _first_pct_in_chunk(_slice_after_phrase(raw, "occupied by owners"))
     if owners is None:
         return False, "summary_occupied_by_owners_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= owners <= SUMMARY_PCT_MAX):
         return False, f"summary_occupied_by_owners_pct_out_of_range:{owners}", snap
     snap["occupied_by_owners_pct"] = str(owners)
 
-    college = _first_pct_in_chunk(_window_around(raw, "has college degree"))
+    college = _first_pct_in_chunk(_slice_after_phrase(raw, "has college degree"))
     if college is None:
         return False, "summary_college_degree_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= college <= SUMMARY_PCT_MAX):
         return False, f"summary_college_degree_pct_out_of_range:{college}", snap
     snap["college_degree_pct"] = str(college)
 
-    hs = _first_pct_in_chunk(_window_around(raw, "finished high school"))
+    hs = _first_pct_in_chunk(_slice_after_phrase(raw, "finished high school"))
     if hs is None:
         return False, "summary_high_school_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= hs <= SUMMARY_PCT_MAX):
         return False, f"summary_high_school_pct_out_of_range:{hs}", snap
     snap["finished_high_school_pct"] = str(hs)
 
-    emp = _first_pct_in_chunk(_window_around(raw, "employed", after=280))
+    emp = _first_pct_in_chunk(_slice_after_phrase(raw, "employed", max_after=300))
     if emp is None:
         return False, "summary_employed_pct_missing", snap
     if not (SUMMARY_PCT_MIN <= emp <= SUMMARY_PCT_MAX):
@@ -1030,7 +1045,7 @@ def _collect_raw_blob_for_summary(
     chunks: List[str] = []
     chunks.append(_safe_inner_text(page.locator("body").first, timeout_ms=900))
     if used_iframe and _interaction_is_iframe_surface(interact_ctx):
-        chunks.append(_safe_inner_text(interact_ctx.locator("body").first, timeout_ms=2_000))
+        chunks.append(_safe_inner_text(interact_ctx.locator("body").first, timeout_ms=1_200))
     return "\n".join(c for c in chunks if c)
 
 
@@ -1097,9 +1112,10 @@ def _try_wait_panel_location_line(interact_ctx: ExplorerCtx, address: str, deadl
             return False
         try:
             pat = re.compile(re.escape(tok), re.I)
+            # Do not spend the entire RESULT_TIMEOUT on one token (wrong/stale order).
             interact_ctx.locator("#current-location-text").filter(has_text=pat).first.wait_for(
                 state="visible",
-                timeout=ms,
+                timeout=min(ms, 900),
             )
             return True
         except PlaywrightTimeoutError:
@@ -1116,8 +1132,8 @@ def _wait_for_explorer_outcome(
     address: str,
 ) -> None:
     """
-    Panel fetch is usually a few seconds. Prefer the summary headline inside the widget iframe,
-    then ``#current-location-text`` tokens, then heading/metrics polling.
+    Wait only for evidence the **Map + Summary** iframe has rendered the KPI block we validate
+    (headline + body text). Avoid per-tick metric/heading scans — those dominated wall time.
     """
     deadline = time.monotonic() + RESULT_TIMEOUT_MS / 1000.0
     page.wait_for_timeout(MIN_POST_SUBMIT_WAIT_MS)
@@ -1130,61 +1146,47 @@ def _wait_for_explorer_outcome(
         page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
         return
 
+    want = _strong_address_tokens(address)
+
     if _interaction_is_iframe_surface(interact_ctx):
         ms = int(max(0.0, deadline - time.monotonic()) * 1000)
-        if ms >= 160:
+        if ms >= 80:
             try:
                 interact_ctx.get_by_text(
                     re.compile(r"summary\s+for\s+selected\s+area", re.I)
-                ).first.wait_for(state="attached", timeout=min(ms, 4_500))
-                page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
-                return
+                ).first.wait_for(state="attached", timeout=ms)
             except PlaywrightTimeoutError:
                 pass
 
-    want = _strong_address_tokens(address)
     if want and _try_wait_panel_location_line(interact_ctx, address, deadline):
-        page.wait_for_timeout(25)
-        name = (
-            _extract_neighborhood_name(read_ctx)
-            or _extract_widget_heading_line(interact_ctx)
-            or _extract_neighborhood_name(interact_ctx)
-        )
-        metrics = {**_extract_metrics(read_ctx), **_extract_metrics(interact_ctx)}
-        if _result_aligns_with_target(
-            name=name,
-            metrics=metrics,
-            raw_blob="",
-            input_value="",
-            address=address,
-        ):
-            page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
-            return
+        page.wait_for_timeout(20)
 
     while time.monotonic() < deadline:
         err = _extract_error(read_ctx) or _extract_error(interact_ctx)
         if err:
             break
-        name = (
-            _extract_neighborhood_name(read_ctx)
-            or _extract_widget_heading_line(interact_ctx)
-            or _extract_neighborhood_name(interact_ctx)
-        )
-        metrics = {**_extract_metrics(read_ctx), **_extract_metrics(interact_ctx)}
-        if want and _result_aligns_with_target(
-            name=name,
-            metrics=metrics,
-            raw_blob="",
-            input_value="",
-            address=address,
-        ):
-            break
-        if not want and name and len(name.strip()) > 2:
-            break
+        if _interaction_is_iframe_surface(interact_ctx):
+            try:
+                blob = _safe_inner_text(interact_ctx.locator("body").first, timeout_ms=380)
+                if blob and "summary for selected area" in blob.lower():
+                    break
+            except Exception:
+                pass
+        else:
+            name = _extract_widget_heading_line(interact_ctx) or _extract_neighborhood_name(interact_ctx)
+            if name and len(name.strip()) > 2 and not _is_default_nashville_ui(name):
+                if not want or _result_aligns_with_target(
+                    name=name,
+                    metrics={},
+                    raw_blob="",
+                    input_value="",
+                    address=address,
+                ):
+                    break
         _wait_for_loading_done(read_ctx, page, deadline)
         if interact_ctx is not read_ctx:
             _wait_for_loading_done(interact_ctx, page, deadline)
-        page.wait_for_timeout(RESULT_SETTLE_POLL_MS)
+        page.wait_for_timeout(RESULT_POLL_MS)
 
     page.wait_for_timeout(STABILIZE_AFTER_OUTCOME_MS)
 
@@ -1416,9 +1418,9 @@ def _submit_and_collect(
     _ensure_map_and_summary_tab(interact_ctx, page)
 
     name = (
-        _extract_neighborhood_name(read_ctx)
-        or _extract_widget_heading_line(interact_ctx)
+        _extract_widget_heading_line(interact_ctx)
         or _extract_neighborhood_name(interact_ctx)
+        or _extract_neighborhood_name(read_ctx)
     )
     err = _extract_error(read_ctx) or _extract_error(interact_ctx)
     m_read = _extract_metrics(read_ctx)
